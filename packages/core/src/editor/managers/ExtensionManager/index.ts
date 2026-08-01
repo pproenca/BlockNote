@@ -15,20 +15,35 @@ import {
   getNodeId,
 } from "../../../api/getBlockInfoFromPos.js";
 import { sortByDependencies } from "../../../util/topo-sort.js";
+import { isBlockNoteDocumentExtension } from "../../../document/validateBlockNoteDocumentExtensions.js";
+import type { AnyBlockNoteDocumentExtension } from "../../../document/BlockNoteDocumentExtension.js";
 import type {
   BlockNoteEditor,
   BlockNoteEditorOptions,
 } from "../../BlockNoteEditor.js";
 import type {
+  AnyExtensionFactory,
   Extension,
+  ExtensionInstanceFromFactory,
   ExtensionFactoryInstance,
-  ExtensionFactory,
 } from "../../BlockNoteExtension.js";
+import { BlockNoteError } from "../../../platform/BlockNoteError.js";
 import { originalFactorySymbol } from "./symbol.js";
 import {
   getDefaultExtensions,
   getDefaultTiptapExtensions,
 } from "./extensions.js";
+import { ExtensionLifecycle } from "./ExtensionLifecycle.js";
+import { SemanticExtensionRegistry } from "./SemanticExtensionRegistry.js";
+
+type ExtensionInput =
+  | Extension
+  | ExtensionFactoryInstance
+  | AnyBlockNoteDocumentExtension;
+
+type ExtensionReference = undefined | string | Extension | AnyExtensionFactory;
+
+type ExtensionReferences = ExtensionReference | readonly ExtensionReference[];
 
 export class ExtensionManager {
   /**
@@ -40,13 +55,17 @@ export class ExtensionManager {
    */
   private extensions: Extension[] = [];
   /**
-   * A map of all the abort controllers for each extension that has an init method defined
-   */
-  private abortMap = new Map<Extension, AbortController>();
-  /**
    * A map of all the extension factories that are registered to the editor
    */
-  private extensionFactories = new Map<ExtensionFactory, Extension>();
+  private extensionFactories = new Map<AnyExtensionFactory, Extension>();
+
+  private semanticExtensions = new SemanticExtensionRegistry();
+
+  private lifecycle = new ExtensionLifecycle();
+
+  private initializing = true;
+
+  private destroyed = false;
   /**
    * Because a single blocknote extension can both have it's own prosemirror plugins & additional generated ones (e.g. keymap & input rules plugins)
    * We need to keep track of all the plugins for each extension, so that we can remove them when the extension is unregistered
@@ -66,59 +85,56 @@ export class ExtensionManager {
     /**
      * When the editor is first mounted, we need to initialize all the extensions
      */
-    editor.onMount(() => {
-      for (const extension of this.extensions) {
-        // If the extension has an init function, we can initialize it, otherwise, it is already added to the editor
-        if (extension.mount) {
-          // We create an abort controller for each extension, so that we can abort the extension when the editor is unmounted
-          const abortController = new window.AbortController();
-          const unmountCallback = extension.mount({
+    this.lifecycle.addSubscription(
+      editor.onMount(() => {
+        for (const extension of this.extensions) {
+          this.lifecycle.mount(extension, {
             dom: editor.prosemirrorView.dom,
             root: editor.prosemirrorView.root,
-            signal: abortController.signal,
           });
-          // If the extension returns a method to unmount it, we can register it to be called when the abort controller is aborted
-          if (unmountCallback) {
-            abortController.signal.addEventListener("abort", () => {
-              unmountCallback();
-            });
-          }
-          // Keep track of the abort controller for each extension, so that we can abort it when the editor is unmounted
-          this.abortMap.set(extension, abortController);
         }
-      }
-    });
+      }),
+    );
 
     /**
      * When the editor is unmounted, we need to abort all the extensions' abort controllers
      */
-    editor.onUnmount(() => {
-      for (const [extension, abortController] of this.abortMap.entries()) {
-        // No longer track the abort controller for this extension
-        this.abortMap.delete(extension);
-        // Abort each extension's abort controller
-        abortController.abort();
-      }
-    });
+    this.lifecycle.addSubscription(
+      editor.onUnmount(() => {
+        this.lifecycle.unmountAll();
+      }),
+    );
 
     // TODO do disabled extensions need to be only for editor base extensions? Or all of them?
     this.disabledExtensions = new Set(options.disableExtensions || []);
 
-    // Add the default extensions
-    for (const extension of getDefaultExtensions(this.editor, this.options)) {
-      this.addExtension(extension);
-    }
-
-    // Add the extensions from the options
-    for (const extension of this.options.extensions ?? []) {
-      this.addExtension(extension);
-    }
-
-    // Add the extensions from blocks specs
-    for (const block of Object.values(this.editor.schema.blockSpecs)) {
-      for (const extension of block.extensions ?? []) {
+    try {
+      // Add the default extensions
+      for (const extension of getDefaultExtensions(this.editor, this.options)) {
         this.addExtension(extension);
       }
+
+      // Add the extensions from the options
+      for (const extension of this.options.extensions ?? []) {
+        this.addExtension(extension);
+      }
+
+      // Add the extensions from blocks specs
+      for (const block of Object.values(this.editor.schema.blockSpecs)) {
+        for (const extension of block.extensions ?? []) {
+          this.addExtension(extension);
+        }
+      }
+
+      this.semanticExtensions.validate();
+      this.initializing = false;
+    } catch (error) {
+      try {
+        this.destroy();
+      } catch {
+        // Preserve the initialization failure.
+      }
+      throw error;
     }
   }
 
@@ -127,12 +143,7 @@ export class ExtensionManager {
    *
    * This allows users to switch on & off extensions "at runtime".
    */
-  public registerExtension(
-    extension:
-      | Extension
-      | ExtensionFactoryInstance
-      | (Extension | ExtensionFactoryInstance)[],
-  ): void {
+  public registerExtension(extension: ExtensionInput | ExtensionInput[]): void {
     this.replaceExtension(undefined, extension);
   }
 
@@ -142,7 +153,7 @@ export class ExtensionManager {
    * @returns The extension instance
    */
   private addExtension(
-    extension: Extension | ExtensionFactoryInstance,
+    extension: ExtensionInput,
     /**
      * When this extension is being added as a dependency declared in another
      * extension's `blockNoteExtensions`, this is the key of that declaring
@@ -150,15 +161,53 @@ export class ExtensionManager {
      */
     parentKey?: string,
   ): Extension | undefined {
-    let instance: Extension;
-    if (typeof extension === "function") {
-      instance = extension({ editor: this.editor });
-    } else {
-      instance = extension;
+    const semanticExtension = isBlockNoteDocumentExtension(extension)
+      ? extension
+      : undefined;
+    if (semanticExtension && !this.initializing) {
+      throw new BlockNoteError(
+        "incompatible-document",
+        `Semantic BlockNote extension "${semanticExtension.name}" cannot be registered at runtime.`,
+      );
     }
 
-    if (!instance || this.disabledExtensions.has(instance.key)) {
-      return undefined as any;
+    let instance: Extension;
+    if (typeof extension === "function") {
+      instance = (extension as ExtensionFactoryInstance)({
+        editor: this.editor,
+        context: this.options.context ?? {},
+      });
+    } else {
+      instance = extension as Extension;
+    }
+
+    if (!instance) {
+      return undefined;
+    }
+
+    const disabled =
+      this.disabledExtensions.has(instance.key) ||
+      (semanticExtension
+        ? this.disabledExtensions.has(semanticExtension.name)
+        : false);
+    if (disabled) {
+      let disposalFailure: unknown;
+      try {
+        this.lifecycle.dispose(instance);
+      } catch (error) {
+        disposalFailure = error;
+      }
+
+      if (semanticExtension) {
+        throw new BlockNoteError(
+          "incompatible-document",
+          `Semantic BlockNote extension "${semanticExtension.name}" cannot be disabled at runtime.`,
+        );
+      }
+      if (disposalFailure) {
+        throw disposalFailure;
+      }
+      return undefined;
     }
 
     // A sub-extension declared via `blockNoteExtensions` must run before the
@@ -180,15 +229,34 @@ export class ExtensionManager {
     // a dependency on another extension via `blockNoteExtensions` without
     // conflicting when the user (or another extension) registers that same
     // extension directly. The first registration wins.
-    if (this.extensions.some((e) => e.key === instance.key)) {
-      return undefined as any;
+    const existing = this.extensions.find((e) => e.key === instance.key);
+    if (existing) {
+      let disposalFailure: unknown;
+      if (existing !== instance) {
+        try {
+          this.lifecycle.dispose(instance);
+        } catch (error) {
+          disposalFailure = error;
+        }
+      }
+
+      if (semanticExtension) {
+        throw new BlockNoteError(
+          "incompatible-document",
+          `Semantic BlockNote extension "${semanticExtension.name}" uses duplicate runtime key "${instance.key}".`,
+        );
+      }
+      if (disposalFailure) {
+        throw disposalFailure;
+      }
+      return undefined;
     }
 
     // Now that we know that the extension is not disabled, we can add it to the extension factories
     if (typeof extension === "function") {
-      const originalFactory = (instance as any)[originalFactorySymbol] as (
-        ...args: any[]
-      ) => ExtensionFactoryInstance;
+      const originalFactory = (instance as any)[
+        originalFactorySymbol
+      ] as AnyExtensionFactory;
 
       if (typeof originalFactory === "function") {
         this.extensionFactories.set(originalFactory, instance);
@@ -196,6 +264,9 @@ export class ExtensionManager {
     }
 
     this.extensions.push(instance);
+    if (semanticExtension) {
+      this.semanticExtensions.add(instance, semanticExtension);
+    }
 
     if (instance.blockNoteExtensions) {
       for (const subExtension of instance.blockNoteExtensions) {
@@ -211,14 +282,7 @@ export class ExtensionManager {
    * @param toResolve - The extension or list of extensions to resolve
    * @returns A list of extension instances
    */
-  private resolveExtensions(
-    toResolve:
-      | undefined
-      | string
-      | Extension
-      | ExtensionFactory
-      | (Extension | ExtensionFactory | string | undefined)[],
-  ): Extension[] {
+  private resolveExtensions(toResolve: ExtensionReferences): Extension[] {
     const extensions = [] as Extension[];
     if (typeof toResolve === "function") {
       const instance = this.extensionFactories.get(toResolve);
@@ -245,14 +309,7 @@ export class ExtensionManager {
    * @param toUnregister - The extension to unregister
    * @returns void
    */
-  public unregisterExtension(
-    toUnregister:
-      | undefined
-      | string
-      | Extension
-      | ExtensionFactory
-      | (Extension | ExtensionFactory | string | undefined)[],
-  ): void {
+  public unregisterExtension(toUnregister: ExtensionReferences): void {
     this.replaceExtension(toUnregister, []);
   }
 
@@ -263,19 +320,25 @@ export class ExtensionManager {
    * @returns void
    */
   public replaceExtension(
-    toUnregister:
-      | undefined
-      | string
-      | Extension
-      | ExtensionFactory
-      | (Extension | ExtensionFactory | string | undefined)[],
-    toRegister:
-      | Extension
-      | ExtensionFactoryInstance
-      | (Extension | ExtensionFactoryInstance)[],
+    toUnregister: ExtensionReferences,
+    toRegister: ExtensionInput | ExtensionInput[],
   ): void {
+    if (this.destroyed) {
+      throw new Error("Cannot change extensions on a destroyed editor.");
+    }
+
     // ---- Remove phase (no updatePlugins call) ----
     const extensionsToRemove = this.resolveExtensions(toUnregister);
+
+    for (const extension of extensionsToRemove) {
+      const semantic = this.semanticExtensions.get(extension);
+      if (semantic) {
+        throw new BlockNoteError(
+          "incompatible-document",
+          `Semantic BlockNote extension "${semantic.name}" cannot be unregistered at runtime.`,
+        );
+      }
+    }
 
     if (toUnregister && !extensionsToRemove.length) {
       // eslint-disable-next-line no-console
@@ -290,6 +353,7 @@ export class ExtensionManager {
     // matching unreliable.
     const pluginRefsToRemove = new Set<Plugin>();
     const pluginKeysToRemove = new Set<string>();
+    let disposalFailure: unknown;
     for (const extension of extensionsToRemove) {
       this.extensions = this.extensions.filter((e) => e !== extension);
       this.extensionFactories.forEach((instance, factory) => {
@@ -297,8 +361,11 @@ export class ExtensionManager {
           this.extensionFactories.delete(factory);
         }
       });
-      this.abortMap.get(extension)?.abort();
-      this.abortMap.delete(extension);
+      try {
+        this.lifecycle.dispose(extension);
+      } catch (error) {
+        disposalFailure ??= error;
+      }
 
       const plugins = this.extensionPlugins.get(extension);
       plugins?.forEach((plugin) => {
@@ -322,9 +389,9 @@ export class ExtensionManager {
     }
 
     // ---- Add phase (no updatePlugins call) ----
-    const newExtensions = ([] as (Extension | ExtensionFactoryInstance)[])
+    const newExtensions = ([] as ExtensionInput[])
       .concat(toRegister)
-      .filter(Boolean) as (Extension | ExtensionFactoryInstance)[];
+      .filter(Boolean) as ExtensionInput[];
 
     const registeredExtensions = newExtensions
       .map((ext) => this.addExtension(ext))
@@ -361,6 +428,9 @@ export class ExtensionManager {
       !pluginKeysToRemove.size &&
       !pluginsToAdd.length
     ) {
+      if (disposalFailure) {
+        throw disposalFailure;
+      }
       return;
     }
 
@@ -384,6 +454,10 @@ export class ExtensionManager {
       }),
       ...pluginsToAdd,
     ]);
+
+    if (disposalFailure) {
+      throw disposalFailure;
+    }
   }
 
   /**
@@ -416,8 +490,11 @@ export class ExtensionManager {
         // A sub-extension declared via `blockNoteExtensions` must run before the
         // extension(s) that declared it, so we merge those parents into its
         // `runsBefore`.
-        const dependents = this.blockNoteExtensionDependents.get(extension.key);
-        if (!dependents?.size) {
+        const dependents = new Set([
+          ...(this.blockNoteExtensionDependents.get(extension.key) ?? []),
+          ...(this.semanticExtensions.getDependents(extension.key) ?? []),
+        ]);
+        if (!dependents.size) {
           return extension;
         }
         return {
@@ -607,6 +684,31 @@ export class ExtensionManager {
     return { plugins, inputRules };
   }
 
+  public destroy() {
+    if (this.destroyed) {
+      return;
+    }
+
+    this.destroyed = true;
+    let failure: unknown;
+
+    try {
+      this.lifecycle.destroy(this.extensions);
+    } catch (error) {
+      failure = error;
+    }
+
+    this.extensions = [];
+    this.extensionFactories.clear();
+    this.extensionPlugins.clear();
+    this.semanticExtensions.clear();
+    this.blockNoteExtensionDependents.clear();
+
+    if (failure) {
+      throw failure;
+    }
+  }
+
   /**
    * Get all extensions
    */
@@ -620,24 +722,24 @@ export class ExtensionManager {
    * Get a specific extension by it's instance
    */
   public getExtension<
-    const Ext extends Extension | ExtensionFactory = Extension,
+    const T extends Extension | AnyExtensionFactory = Extension,
   >(
     extension: string,
   ):
-    | (Ext extends Extension
-        ? Ext
-        : Ext extends ExtensionFactory
-          ? ReturnType<ReturnType<Ext>>
+    | (T extends Extension
+        ? T
+        : T extends AnyExtensionFactory
+          ? ExtensionInstanceFromFactory<T>
           : never)
     | undefined;
-  public getExtension<const T extends ExtensionFactory>(
+  public getExtension<const T extends AnyExtensionFactory>(
     extension: T,
-  ): ReturnType<ReturnType<T>> | undefined;
-  public getExtension<const T extends ExtensionFactory | string = string>(
+  ): ExtensionInstanceFromFactory<T> | undefined;
+  public getExtension<const T extends AnyExtensionFactory | string = string>(
     extension: T,
   ):
-    | (T extends ExtensionFactory
-        ? ReturnType<ReturnType<T>>
+    | (T extends AnyExtensionFactory
+        ? ExtensionInstanceFromFactory<T>
         : T extends string
           ? Extension
           : never)
@@ -661,7 +763,7 @@ export class ExtensionManager {
   /**
    * Check if an extension exists
    */
-  public hasExtension(key: string | Extension | ExtensionFactory): boolean {
+  public hasExtension(key: string | Extension | AnyExtensionFactory): boolean {
     if (typeof key === "string") {
       return this.extensions.some((e) => e.key === key);
     } else if (typeof key === "object" && "key" in key) {

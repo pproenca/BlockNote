@@ -1,6 +1,12 @@
 import { Store, StoreOptions } from "@tanstack/store";
 import { type AnyExtension } from "@tiptap/core";
 import type { Plugin as ProsemirrorPlugin } from "prosemirror-state";
+import type {
+  AnyBlockNoteDocumentExtension,
+  BlockNoteDocumentExtension,
+  BlockNoteDocumentExtensionMetadata,
+  BlockNoteEmptyContext,
+} from "../document/BlockNoteDocumentExtension.js";
 import type { PartialBlockNoDefaults } from "../schema/index.js";
 import type { BlockNoteEditor } from "./BlockNoteEditor.js";
 import { originalFactorySymbol } from "./managers/ExtensionManager/symbol.js";
@@ -41,6 +47,12 @@ export interface Extension<State = any, Key extends string = string> {
    * The store for the extension.
    */
   readonly store?: Store<State>;
+
+  /**
+   * Disposes resources owned by the extension instance. Unlike `mount`
+   * cleanup, this runs once for the lifetime of the editor.
+   */
+  readonly destroy?: OnDestroy;
 
   /**
    * Declares what {@link Extension}s that this extension depends on.
@@ -133,9 +145,11 @@ export interface ExtensionOptions<
   Options extends Record<string, any> | undefined =
     | Record<string, any>
     | undefined,
+  Context extends object = BlockNoteEmptyContext,
 > {
   options: Options;
   editor: BlockNoteEditor<any, any, any>;
+  context: Context;
 }
 
 // a type that maps the extension key to the return type of the extension factory
@@ -155,7 +169,80 @@ export type ExtensionMap<T extends ReadonlyArray<ExtensionFactoryInstance>> = {
  */
 export type ExtensionFactoryInstance<
   Ext extends Extension<any, any> = Extension<any, any>,
-> = (ctx: Omit<ExtensionOptions<any>, "options">) => Ext;
+  Context extends object = BlockNoteEmptyContext,
+> = (
+  ctx: Omit<ExtensionOptions<any, Context>, "options" | "context"> & {
+    context?: Context;
+  },
+) => Ext;
+
+type FactoryOptions<Factory extends (ctx: any) => Extension> =
+  Parameters<Factory>[0] extends ExtensionOptions<infer Options, any>
+    ? Options
+    : undefined;
+
+type FactoryContext<Factory extends (ctx: any) => Extension> =
+  Parameters<Factory>[0] extends ExtensionOptions<any, infer Context>
+    ? Context
+    : BlockNoteEmptyContext;
+
+type MetadataDependencies<Metadata extends BlockNoteDocumentExtensionMetadata> =
+  Metadata extends {
+    readonly dependencies: infer Dependencies extends readonly string[];
+  }
+    ? Dependencies
+    : readonly [];
+
+type ConfiguredDocumentExtension<
+  Factory extends (ctx: any) => Extension,
+  Metadata extends BlockNoteDocumentExtensionMetadata,
+> = BlockNoteDocumentExtension<
+  Metadata["name"],
+  Metadata["version"],
+  MetadataDependencies<Metadata>,
+  FactoryOptions<Factory>,
+  FactoryContext<Factory>,
+  ReturnType<Factory>
+>;
+
+export type BlockNoteDocumentExtensionFactory<
+  Factory extends (ctx: any) => Extension = (ctx: any) => Extension,
+  Metadata extends BlockNoteDocumentExtensionMetadata =
+    BlockNoteDocumentExtensionMetadata,
+> =
+  undefined extends FactoryOptions<Factory>
+    ? (
+        options?: Exclude<FactoryOptions<Factory>, undefined>,
+      ) => ConfiguredDocumentExtension<Factory, Metadata>
+    : (
+        options: FactoryOptions<Factory>,
+      ) => ConfiguredDocumentExtension<Factory, Metadata>;
+
+export type AnyBlockNoteDocumentExtensionFactory = (
+  options?: any,
+) => AnyBlockNoteDocumentExtension;
+
+export type AnyExtensionFactory =
+  | ExtensionFactory
+  | AnyBlockNoteDocumentExtensionFactory;
+
+export type ExtensionInstanceFromFactory<Factory> = Factory extends (
+  ...args: any[]
+) => infer Configured
+  ? Configured extends BlockNoteDocumentExtension<
+      any,
+      any,
+      any,
+      any,
+      any,
+      infer ExtensionInstance,
+      any
+    >
+    ? ExtensionInstance
+    : Configured extends ExtensionFactoryInstance<infer ExtensionInstance>
+      ? ExtensionInstance
+      : never
+  : never;
 
 /**
  * This is the return type of the {@link createExtension} function.
@@ -181,6 +268,27 @@ export type ExtensionFactory<
  */
 // This overload is for `createExtension({ key: "test", ... })`
 export function createExtension<
+  const Factory extends (ctx: any) => Extension<any, any>,
+  const Metadata extends BlockNoteDocumentExtensionMetadata,
+>(
+  factory: Factory,
+  metadata: Metadata,
+): BlockNoteDocumentExtensionFactory<Factory, Metadata>;
+export function createExtension<
+  const Ext extends Extension<any, any>,
+  const Metadata extends BlockNoteDocumentExtensionMetadata,
+>(
+  factory: Ext,
+  metadata: Metadata,
+): BlockNoteDocumentExtension<
+  Metadata["name"],
+  Metadata["version"],
+  MetadataDependencies<Metadata>,
+  undefined,
+  BlockNoteEmptyContext,
+  Ext
+>;
+export function createExtension<
   const State = any,
   const Key extends string = string,
   const Ext extends Extension<State, Key> = Extension<State, Key>,
@@ -195,42 +303,83 @@ export function createExtension<
   ) => Extension<State, Key>,
 >(factory: Factory): ExtensionFactory<State, Key, Factory>;
 // This overload is for both of the above overloads as it is the implementation of the function
-export function createExtension<
-  const State = any,
-  const Options extends Record<string, any> | undefined = any,
-  const Key extends string = string,
-  const Factory extends
-    | Extension<State, Key>
-    | ((ctx: any) => Extension<State, Key>) = (
-    ctx: ExtensionOptions<Options>,
-  ) => Extension<State, Key>,
->(
-  factory: Factory,
-): Factory extends Extension<State, Key>
-  ? ExtensionFactoryInstance<Factory>
-  : Factory extends (ctx: any) => Extension<State, Key>
-    ? ExtensionFactory<State, Key, Factory>
-    : never {
+export function createExtension(
+  factory: Extension<any, any> | ((ctx: any) => Extension<any, any>),
+  metadata?: BlockNoteDocumentExtensionMetadata,
+): any {
+  const documentMetadata = metadata
+    ? Object.freeze({
+        name: metadata.name,
+        version: metadata.version,
+        dependencies: Object.freeze([...(metadata.dependencies ?? [])]),
+      })
+    : undefined;
+
+  const decorate = <Configured extends ExtensionFactoryInstance>(
+    configured: Configured,
+    options: any,
+  ) => {
+    if (!documentMetadata) {
+      return configured;
+    }
+
+    const immutableOptions =
+      options && typeof options === "object"
+        ? Object.isFrozen(options)
+          ? options
+          : Object.freeze({ ...options })
+        : options;
+
+    Object.defineProperties(configured, {
+      name: { enumerable: true, value: documentMetadata.name },
+      version: { enumerable: true, value: documentMetadata.version },
+      dependencies: {
+        enumerable: true,
+        value: documentMetadata.dependencies,
+      },
+      options: { enumerable: true, value: immutableOptions },
+    });
+
+    return configured;
+  };
+
   if (typeof factory === "object" && "key" in factory) {
-    return function factoryFn() {
+    const factoryFn = function factoryFn() {
       (factory as any)[originalFactorySymbol] = factoryFn;
       return factory;
-    } as any;
+    };
+
+    return decorate(factoryFn, undefined);
   }
 
   if (typeof factory !== "function") {
     throw new Error("factory must be a function");
   }
 
-  return function factoryFn(options: Options) {
-    return (ctx: { editor: BlockNoteEditor<any, any, any> }) => {
-      const extension = factory({ editor: ctx.editor, options });
+  const extensionFactory = function extensionFactory(options: any) {
+    const immutableOptions =
+      documentMetadata && options && typeof options === "object"
+        ? Object.freeze({ ...options })
+        : options;
+    const configured = (ctx: {
+      editor: BlockNoteEditor<any, any, any>;
+      context?: object;
+    }) => {
+      const extension = factory({
+        editor: ctx.editor,
+        options: immutableOptions,
+        context: ctx.context ?? {},
+      });
       // We stick a symbol onto the extension to allow us to retrieve the original factory for comparison later.
       // This enables us to do things like: `editor.getExtension(YSync).prosemirrorPlugins`
-      (extension as any)[originalFactorySymbol] = factoryFn;
+      (extension as any)[originalFactorySymbol] = extensionFactory;
       return extension;
     };
-  } as any;
+
+    return decorate(configured, immutableOptions);
+  };
+
+  return extensionFactory as any;
 }
 
 export function createStore<T = any>(
