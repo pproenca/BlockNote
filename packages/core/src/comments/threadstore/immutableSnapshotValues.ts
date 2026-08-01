@@ -19,6 +19,7 @@ const capturedDateReadOperationNames = [
   "getUTCMinutes",
   "getUTCMonth",
   "getUTCSeconds",
+  "getYear",
   "toDateString",
   "toISOString",
   "toLocaleDateString",
@@ -27,6 +28,7 @@ const capturedDateReadOperationNames = [
   "toString",
   "toTimeString",
   "toUTCString",
+  "toGMTString",
   "valueOf",
 ] as const;
 const capturedDateReadOperations = new Map<PropertyKey, CallableFunction>(

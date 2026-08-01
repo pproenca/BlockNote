@@ -5,6 +5,58 @@ import {
   immutableSnapshotDate,
 } from "./immutableSnapshotValues.js";
 
+const dateReadCases: readonly {
+  readonly args?: readonly unknown[];
+  readonly name: string;
+  readonly property: PropertyKey;
+}[] = [
+  { name: "getDate", property: "getDate" },
+  { name: "getDay", property: "getDay" },
+  { name: "getFullYear", property: "getFullYear" },
+  { name: "getHours", property: "getHours" },
+  { name: "getMilliseconds", property: "getMilliseconds" },
+  { name: "getMinutes", property: "getMinutes" },
+  { name: "getMonth", property: "getMonth" },
+  { name: "getSeconds", property: "getSeconds" },
+  { name: "getTime", property: "getTime" },
+  { name: "getTimezoneOffset", property: "getTimezoneOffset" },
+  { name: "getUTCDate", property: "getUTCDate" },
+  { name: "getUTCDay", property: "getUTCDay" },
+  { name: "getUTCFullYear", property: "getUTCFullYear" },
+  { name: "getUTCHours", property: "getUTCHours" },
+  { name: "getUTCMilliseconds", property: "getUTCMilliseconds" },
+  { name: "getUTCMinutes", property: "getUTCMinutes" },
+  { name: "getUTCMonth", property: "getUTCMonth" },
+  { name: "getUTCSeconds", property: "getUTCSeconds" },
+  { name: "getYear (legacy)", property: "getYear" },
+  { name: "toDateString", property: "toDateString" },
+  { name: "toISOString", property: "toISOString" },
+  { name: "toJSON", property: "toJSON" },
+  { name: "toLocaleDateString", property: "toLocaleDateString" },
+  { name: "toLocaleString", property: "toLocaleString" },
+  { name: "toLocaleTimeString", property: "toLocaleTimeString" },
+  { name: "toString", property: "toString" },
+  { name: "toTimeString", property: "toTimeString" },
+  { name: "toUTCString", property: "toUTCString" },
+  { name: "toGMTString (legacy)", property: "toGMTString" },
+  { name: "valueOf", property: "valueOf" },
+  {
+    args: ["default"],
+    name: "Symbol.toPrimitive(default)",
+    property: Symbol.toPrimitive,
+  },
+  {
+    args: ["number"],
+    name: "Symbol.toPrimitive(number)",
+    property: Symbol.toPrimitive,
+  },
+  {
+    args: ["string"],
+    name: "Symbol.toPrimitive(string)",
+    property: Symbol.toPrimitive,
+  },
+];
+
 describe("immutable snapshot values", () => {
   it("exposes a non-leaking map facade through cycles and forEach", () => {
     const source = new Map<unknown, unknown>();
@@ -74,6 +126,18 @@ describe("immutable snapshot values", () => {
     expect(invalid.toJSON()).toBeNull();
   });
 
+  it.each(dateReadCases)(
+    "preserves Date read semantics for $name",
+    ({ args = [], property }) => {
+      const source = new Date("2026-08-01T12:34:56.789Z");
+      const facade = immutableSnapshotDate(source);
+
+      expect(invokeDateOperation(facade, property, args)).toEqual(
+        invokeDateOperation(source, property, args),
+      );
+    },
+  );
+
   it("rejects aliased mutators and arbitrary Date prototype accessors", () => {
     const mutatorAlias = Symbol("mutatorAlias");
     const accessorAlias = Symbol("accessorAlias");
@@ -107,3 +171,15 @@ describe("immutable snapshot values", () => {
     }
   });
 });
+
+function invokeDateOperation(
+  value: Date,
+  property: PropertyKey,
+  args: readonly unknown[],
+) {
+  const operation = Reflect.get(value, property);
+  if (typeof operation !== "function") {
+    throw new TypeError(`Date operation ${String(property)} is unavailable.`);
+  }
+  return Reflect.apply(operation, value, args);
+}
