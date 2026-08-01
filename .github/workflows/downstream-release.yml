@@ -28,6 +28,10 @@ jobs:
           node-version-file: ".node-version"
           cache: true
 
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.8.0
+
       - name: Install dependencies
         run: vp install
 
