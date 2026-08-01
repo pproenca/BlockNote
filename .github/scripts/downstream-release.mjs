@@ -14,31 +14,37 @@ export const downstreamPackages = Object.freeze([
     directory: "packages/core",
     upstreamName: "@blocknote/core",
     downstreamName: "@pproenca/blocknote-core",
+    requiredRuntimeExports: ["BlockNoteSchema", "createBlockNoteDocument"],
   },
   {
     directory: "packages/collaboration",
     upstreamName: "@blocknote/collaboration",
     downstreamName: "@pproenca/blocknote-collaboration",
+    requiredRuntimeExports: [],
   },
   {
     directory: "packages/collaboration-server",
     upstreamName: "@blocknote/collaboration-server",
     downstreamName: "@pproenca/blocknote-collaboration-server",
+    requiredRuntimeExports: [],
   },
   {
     directory: "packages/react",
     upstreamName: "@blocknote/react",
     downstreamName: "@pproenca/blocknote-react",
+    requiredRuntimeExports: ["createReactBlockSpec"],
   },
   {
     directory: "packages/server-util",
     upstreamName: "@blocknote/server-util",
     downstreamName: "@pproenca/blocknote-server-util",
+    requiredRuntimeExports: ["ServerBlockNoteEditor"],
   },
   {
     directory: "packages/test-utils",
     upstreamName: "@blocknote/test-utils",
     downstreamName: "@pproenca/blocknote-test-utils",
+    requiredRuntimeExports: [],
   },
 ]);
 
@@ -63,7 +69,34 @@ export function parseDownstreamReleaseTag(tag) {
     upstreamVersion,
     downstreamRevision,
     downstreamVersion: `${upstreamVersion}-pf.${downstreamRevision}`,
+    distributionTag: `pf-${upstreamVersion.replaceAll(".", "-")}-${downstreamRevision}`,
   });
+}
+
+export async function validateReleaseEntrypoints({
+  packages = downstreamPackages,
+} = {}) {
+  for (const packageDefinition of packages) {
+    const requiredExports = packageDefinition.requiredRuntimeExports;
+
+    if (!Array.isArray(requiredExports) || requiredExports.length === 0) {
+      throw new Error(
+        `${packageDefinition.upstreamName} has no required runtime export contract`,
+      );
+    }
+
+    if (
+      requiredExports.some(
+        (exportName) =>
+          typeof exportName !== "string" || exportName.trim() === "",
+      ) ||
+      new Set(requiredExports).size !== requiredExports.length
+    ) {
+      throw new Error(
+        `${packageDefinition.upstreamName} has an invalid required runtime export contract`,
+      );
+    }
+  }
 }
 
 function manifestPath(root, packageDefinition) {
@@ -137,6 +170,10 @@ export async function validateDownstreamManifests({ root, release, prepared }) {
 
     if (manifest.private === true) {
       throw new Error(`${manifest.name} must be publishable`);
+    }
+
+    if (Object.hasOwn(manifest, "publishConfig")) {
+      throw new Error(`${manifest.name} must not define publishConfig`);
     }
 
     if (prepared) {
@@ -225,7 +262,9 @@ export async function validatePackedArtifacts({
 
   if (unexpectedTarballs.length > 0) {
     throw new Error(
-      `Unexpected packed artifacts: ${unexpectedTarballs.sort().join(", ")}`,
+      `Unexpected packed artifacts: ${unexpectedTarballs
+        .sort((left, right) => left.localeCompare(right))
+        .join(", ")}`,
     );
   }
 }
@@ -237,6 +276,63 @@ export async function getPackedArtifactIntegrity(file) {
   return `sha512-${digest}`;
 }
 
+function decodeAttestationStatement(attestation) {
+  const payload = attestation?.bundle?.dsseEnvelope?.payload;
+  if (typeof payload !== "string") {
+    return undefined;
+  }
+
+  return JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
+}
+
+export async function validateNpmProvenance({
+  auditFile,
+  packageName,
+  version,
+  repository,
+  workflowPath,
+  workflowRef,
+  commit,
+}) {
+  const audit = JSON.parse(await readFile(auditFile, "utf8"));
+  const record = audit.verified?.find(
+    (candidate) =>
+      candidate.name === packageName && candidate.version === version,
+  );
+
+  if (!record) {
+    throw new Error(
+      `No verified npm attestation for ${packageName}@${version}`,
+    );
+  }
+
+  for (const attestation of record.attestationBundles ?? []) {
+    if (attestation.predicateType !== "https://slsa.dev/provenance/v1") {
+      continue;
+    }
+
+    const statement = decodeAttestationStatement(attestation);
+    const definition = statement?.predicate?.buildDefinition;
+    const workflow = definition?.externalParameters?.workflow;
+    const source = definition?.resolvedDependencies?.find(
+      (dependency) => dependency?.digest?.gitCommit === commit,
+    );
+
+    if (
+      workflow?.repository === repository &&
+      workflow?.path === workflowPath &&
+      workflow?.ref === workflowRef &&
+      source
+    ) {
+      return;
+    }
+  }
+
+  throw new Error(
+    `${packageName}@${version} has no provenance from ${repository}/${workflowPath}@${workflowRef} (${commit})`,
+  );
+}
+
 function consumerTarballPath(artifactDirectory, packageDefinition, release) {
   return path.resolve(
     artifactDirectory,
@@ -245,11 +341,12 @@ function consumerTarballPath(artifactDirectory, packageDefinition, release) {
 }
 
 function createConsumerRuntimeProbe(release) {
-  const expectedExports = {
-    "@blocknote/core": ["BlockNoteSchema", "createBlockNoteDocument"],
-    "@blocknote/react": ["createReactBlockSpec"],
-    "@blocknote/server-util": ["ServerBlockNoteEditor"],
-  };
+  const expectedExports = Object.fromEntries(
+    downstreamPackages.map(({ upstreamName, requiredRuntimeExports }) => [
+      upstreamName,
+      requiredRuntimeExports,
+    ]),
+  );
 
   return `
 import { fileURLToPath } from "node:url";
@@ -501,6 +598,12 @@ async function main() {
     case "validate":
       await validateDownstreamManifests({ root, release, prepared: false });
       return;
+    case "release-ready":
+      await validateReleaseEntrypoints({ root });
+      return;
+    case "dist-tag":
+      process.stdout.write(release.distributionTag);
+      return;
     case "prepare":
       await prepareDownstreamManifests({ root, release });
       return;
@@ -533,6 +636,26 @@ async function main() {
       process.stdout.write(
         await getPackedArtifactIntegrity(path.resolve(root, file)),
       );
+      return;
+    }
+    case "verify-provenance": {
+      const [auditFile, packageName, version, commit] = arguments_;
+
+      if (!auditFile || !packageName || !version || !commit) {
+        throw new Error(
+          "verify-provenance requires audit JSON, package, version, and commit",
+        );
+      }
+
+      await validateNpmProvenance({
+        auditFile: path.resolve(root, auditFile),
+        packageName,
+        version,
+        repository: "https://github.com/pproenca/BlockNote",
+        workflowPath: ".github/workflows/downstream-release.yml",
+        workflowRef: `refs/tags/${tag}`,
+        commit,
+      });
       return;
     }
     case "create-consumer": {

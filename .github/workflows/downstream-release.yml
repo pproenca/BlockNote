@@ -8,26 +8,32 @@ on:
 permissions: {}
 
 concurrency:
-  group: downstream-release-${{ github.ref }}
+  group: downstream-release
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  release:
-    name: Verify and publish downstream package set
+  verify:
+    name: Build and verify downstream package set
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: write
-      id-token: write
+      contents: read
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - id: release
+        name: Require tagged commit on main
+        run: |
+          release_commit=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$release_commit" origin/main
+          echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
 
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
@@ -47,13 +53,10 @@ jobs:
         run: |
           node --test .github/scripts/downstream-release.test.mjs
           node .github/scripts/downstream-release.mjs validate "$RELEASE_TAG"
-
-      - name: Verify tagged commit is on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node .github/scripts/downstream-release.mjs release-ready "$RELEASE_TAG"
 
       - name: Typecheck
-        run: |
-          pnpm typecheck
+        run: pnpm typecheck
 
       - name: Build lint prerequisites
         run: |
@@ -62,8 +65,7 @@ jobs:
           vp run --filter @blocknote/mantine build
 
       - name: Lint
-        run: |
-          vp lint --type-aware
+        run: vp lint --type-aware
 
       - name: Test packages
         run: |
@@ -131,6 +133,33 @@ jobs:
           node .github/scripts/downstream-release.mjs verify-artifacts
           "$RELEASE_TAG" artifacts/npm downstream
 
+      - name: Record verified release plan
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          distribution_tag=$(node .github/scripts/downstream-release.mjs dist-tag "$RELEASE_TAG")
+          node --input-type=module - "$RELEASE_TAG" "$RELEASE_COMMIT" "$distribution_tag" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFile, writeFile } from "node:fs/promises";
+
+          const [releaseTag, commit, distributionTag] = process.argv.slice(2);
+          const directories = ["core", "collaboration", "collaboration-server", "react", "server-util", "test-utils"];
+          const packages = [];
+          for (const directory of directories) {
+            const manifest = JSON.parse(await readFile(`packages/${directory}/package.json`, "utf8"));
+            const tarball = `npm/${manifest.name.slice(1).replace("/", "-")}-${manifest.version}.tgz`;
+            const contents = await readFile(`artifacts/${tarball}`);
+            packages.push({
+              name: manifest.name,
+              version: manifest.version,
+              tarball,
+              integrity: `sha512-${createHash("sha512").update(contents).digest("base64")}`,
+            });
+          }
+          await writeFile("artifacts/release.json", `${JSON.stringify({ schemaVersion: 1, releaseTag, commit, distributionTag, packages }, null, 2)}\n`);
+          NODE
+
       - name: Test downstream package set
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -142,81 +171,267 @@ jobs:
           node "$consumer_dir/runtime.mjs"
           node_modules/.bin/tsc --project "$consumer_dir/tsconfig.json"
 
+      - name: Upload verified release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: downstream-release-candidate
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish verified downstream package set
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Download verified release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: downstream-release-candidate
+          path: artifacts
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
 
-      - name: Require an unused package version set
-        run: |
-          for package_dir in \
-            packages/core \
-            packages/collaboration \
-            packages/collaboration-server \
-            packages/react \
-            packages/server-util \
-            packages/test-utils; do
-            package_name=$(node -p "require('./$package_dir/package.json').name")
-            package_version=$(node -p "require('./$package_dir/package.json').version")
-            published_version=$(npm view "$package_name@$package_version" version 2>/dev/null || true)
-
-            if [ -n "$published_version" ]; then
-              echo "$package_name@$package_version already exists; use a new downstream revision" >&2
-              exit 1
-            fi
-          done
-
-      - name: Publish downstream packages
-        run: |
-          for package_dir in \
-            packages/core \
-            packages/collaboration \
-            packages/collaboration-server \
-            packages/react \
-            packages/server-util \
-            packages/test-utils; do
-            tarball_name=$(node -p "const p=require('./$package_dir/package.json'); p.name.slice(1).replace('/', '-') + '-' + p.version + '.tgz'")
-            tarball_path="artifacts/npm/$tarball_name"
-            npm publish "$tarball_path" --access public --tag pf --provenance
-          done
-
-      - name: Verify published package set
+      - name: Publish or resume exact package set
         env:
+          RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          for package_dir in \
-            packages/core \
-            packages/collaboration \
-            packages/collaboration-server \
-            packages/react \
-            packages/server-util \
-            packages/test-utils; do
-            package_name=$(node -p "require('./$package_dir/package.json').name")
-            package_version=$(node -p "require('./$package_dir/package.json').version")
-            tarball_name=$(node -p "const p=require('./$package_dir/package.json'); p.name.slice(1).replace('/', '-') + '-' + p.version + '.tgz'")
-            local_integrity=$(node .github/scripts/downstream-release.mjs integrity "$RELEASE_TAG" "artifacts/npm/$tarball_name")
-            published_version=""
-            published_integrity=""
+          validated_release=$(mktemp -d)
+          node --input-type=module - "$RELEASE_TAG" "$RELEASE_COMMIT" "$validated_release" <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import { readFileSync, writeFileSync } from "node:fs";
+          import path from "node:path";
 
-            for attempt in 1 2 3 4 5 6; do
+          const [releaseTag, commit, outputDirectory] = process.argv.slice(2);
+          const match = /^pf-v(\d+\.\d+\.\d+)\.(0|[1-9]\d*)$/.exec(releaseTag);
+          if (!match) {
+            throw new Error("Invalid release tag");
+          }
+
+          const [, upstreamVersion, downstreamRevision] = match;
+          const version = `${upstreamVersion}-pf.${downstreamRevision}`;
+          const distributionTag = `pf-${upstreamVersion.replaceAll(".", "-")}-${downstreamRevision}`;
+          const expectedNames = Object.freeze([
+            "@pproenca/blocknote-core",
+            "@pproenca/blocknote-collaboration",
+            "@pproenca/blocknote-collaboration-server",
+            "@pproenca/blocknote-react",
+            "@pproenca/blocknote-server-util",
+            "@pproenca/blocknote-test-utils",
+          ]);
+          const plan = JSON.parse(readFileSync("artifacts/release.json", "utf8"));
+          const planKeys = [
+            "commit",
+            "distributionTag",
+            "packages",
+            "releaseTag",
+            "schemaVersion",
+          ];
+          if (
+            Object.keys(plan).sort().join("\0") !== planKeys.join("\0") ||
+            plan.schemaVersion !== 1 ||
+            plan.releaseTag !== releaseTag ||
+            plan.commit !== commit ||
+            plan.distributionTag !== distributionTag ||
+            !Array.isArray(plan.packages) ||
+            plan.packages.length !== expectedNames.length
+          ) {
+            throw new Error("Release plan does not match the event");
+          }
+
+          const records = new Map();
+          for (const record of plan.packages) {
+            if (
+              !record ||
+              typeof record !== "object" ||
+              Array.isArray(record) ||
+              Object.keys(record).sort().join("\0") !==
+                ["integrity", "name", "tarball", "version"].join("\0") ||
+              !expectedNames.includes(record.name) ||
+              records.has(record.name)
+            ) {
+              throw new Error("Release plan has an unexpected package set");
+            }
+            records.set(record.name, record);
+          }
+
+          const validated = [];
+          for (const name of expectedNames) {
+            const record = records.get(name);
+            const tarball = `npm/${name.slice(1).replace("/", "-")}-${version}.tgz`;
+            if (record.version !== version || record.tarball !== tarball) {
+              throw new Error(`Invalid release coordinates for ${name}`);
+            }
+
+            const tarballPath = path.join("artifacts", tarball);
+            const contents = readFileSync(tarballPath);
+            const integrity = `sha512-${createHash("sha512").update(contents).digest("base64")}`;
+            if (record.integrity !== integrity) {
+              throw new Error(`Invalid tarball integrity for ${name}`);
+            }
+
+            const manifest = JSON.parse(
+              execFileSync(
+                "tar",
+                ["-xOzf", tarballPath, "package/package.json"],
+                { encoding: "utf8", maxBuffer: 1024 * 1024 },
+              ),
+            );
+            if (
+              manifest.name !== name ||
+              manifest.version !== version ||
+              manifest.private === true ||
+              Object.hasOwn(manifest, "publishConfig")
+            ) {
+              throw new Error(`Invalid packed manifest for ${name}`);
+            }
+
+            validated.push([name, version, tarball, integrity].join("\t"));
+          }
+
+          writeFileSync(
+            path.join(outputDirectory, "packages.tsv"),
+            `${validated.join("\n")}\n`,
+            { flag: "wx" },
+          );
+          writeFileSync(
+            path.join(outputDirectory, "distribution-tag"),
+            distributionTag,
+            { flag: "wx" },
+          );
+          NODE
+          distribution_tag=$(cat "$validated_release/distribution-tag")
+
+          npm_view() {
+            registry_error=$(mktemp)
+            if npm view "$1" "$2" --json > "$3" 2> "$registry_error"; then
+              return 0
+            else
+              status=$?
+            fi
+            if grep -q "E404" "$registry_error"; then return 44; fi
+            cat "$registry_error" >&2
+            return "$status"
+          }
+
+          while IFS=$'\t' read -r package_name package_version relative_tarball local_integrity; do
+            tarball_path="artifacts/$relative_tarball"
+            computed_integrity=$(node -e "const fs=require('fs'),c=require('crypto'); process.stdout.write('sha512-'+c.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$tarball_path")
+            test "$computed_integrity" = "$local_integrity"
+            registry_metadata=$(mktemp)
+            if npm_view "$package_name@$package_version" dist "$registry_metadata"; then
+              version_exists=true
+              published_integrity=$(node -e "const fs=require('fs'); const value=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(value.integrity ?? '')" "$registry_metadata")
+              test "$published_integrity" = "$local_integrity"
+            else
+              status=$?
+              test "$status" = 44
+              version_exists=false
+            fi
+
+            tags_file=$(mktemp)
+            if npm_view "$package_name" dist-tags "$tags_file"; then
+              tagged_version=$(node -e "const fs=require('fs'); const tags=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(tags[process.argv[2]] ?? '')" "$tags_file" "$distribution_tag")
+            else
+              status=$?
+              test "$status" = 44
+              tagged_version=""
+            fi
+            if [ "$version_exists" = true ]; then
+              test "$tagged_version" = "$package_version"
+              echo "Reusing $package_name@$package_version"
+            else
+              test -z "$tagged_version" || test "$tagged_version" = "$package_version"
+              npm publish "$tarball_path" --registry=https://registry.npmjs.org --access public --tag "$distribution_tag" --provenance --ignore-scripts
+            fi
+
+            registry_verified=""
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
               echo "Registry verification attempt $attempt for $package_name@$package_version"
-              published_version=$(npm view "$package_name@$package_version" version 2>/dev/null || true)
               published_integrity=$(npm view "$package_name@$package_version" dist.integrity 2>/dev/null || true)
-
-              if [ "$published_version" = "$package_version" ] && [ "$published_integrity" = "$local_integrity" ]; then
+              tagged_version=$(npm view "$package_name" "dist-tags.$distribution_tag" 2>/dev/null || true)
+              if [ "$published_integrity" = "$local_integrity" ] && [ "$tagged_version" = "$package_version" ]; then
+                registry_verified=true
                 break
               fi
-
               sleep 5
             done
+            test "$registry_verified" = true
+          done < "$validated_release/packages.tsv"
 
-            test "$published_version" = "$package_version"
-            test "$published_integrity" = "$local_integrity"
-          done
+  verify-published:
+    name: Verify published downstream package set
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
 
-      - name: Test published package set
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: ".node-version"
+          cache: true
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.8.0
+      - run: vp install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: downstream-release-candidate
+          path: artifacts
+      - name: Verify provenance and published package set
         env:
+          RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          node .github/scripts/downstream-release.mjs prepare "$RELEASE_TAG"
+          distribution_tag=$(node -p "require('./artifacts/release.json').distributionTag")
+          verify_provenance() {
+            package_name="$1"; package_version="$2"; tarball_path="$3"
+            audit_dir=$(mktemp -d)
+            target="$audit_dir/node_modules/${package_name}"
+            mkdir -p "$target"
+            tar -xzf "$tarball_path" --strip-components=1 -C "$target"
+            node -e "const fs=require('fs'),f=process.argv[1],n=process.argv[2],v=process.argv[3]; const p=JSON.parse(fs.readFileSync(f)); for(const k of ['dependencies','optionalDependencies','peerDependencies','devDependencies']) delete p[k]; fs.writeFileSync(f,JSON.stringify(p)); fs.writeFileSync(f.replace(/node_modules.*$/,'package.json'),JSON.stringify({name:'provenance-audit',private:true,dependencies:{[n]:v}}))" "$target/package.json" "$package_name" "$package_version"
+            npm --prefix "$audit_dir" audit signatures --json --include-attestations > "$audit_dir/audit.json" 2> "$audit_dir/audit.err" || true
+            node .github/scripts/downstream-release.mjs verify-provenance "$RELEASE_TAG" "$audit_dir/audit.json" "$package_name" "$package_version" "$RELEASE_COMMIT"
+          }
+          while IFS=$'\t' read -r package_name package_version relative_tarball local_integrity; do
+            registry_verified=""
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              echo "Registry verification attempt $attempt for $package_name@$package_version"
+              published_integrity=$(npm view "$package_name@$package_version" dist.integrity 2>/dev/null || true)
+              tagged_version=$(npm view "$package_name" "dist-tags.$distribution_tag" 2>/dev/null || true)
+              if [ "$published_integrity" = "$local_integrity" ] && [ "$tagged_version" = "$package_version" ]; then
+                registry_verified=true
+                break
+              fi
+              sleep 5
+            done
+            test "$registry_verified" = true
+            provenance_verified=""
+            for attempt in 1 2 3 4 5 6; do
+              echo "Provenance verification attempt $attempt for $package_name@$package_version"
+              if verify_provenance "$package_name" "$package_version" "artifacts/$relative_tarball"; then provenance_verified=true; break; fi
+              sleep 5
+            done
+            test "$provenance_verified" = true
+          done < <(node -e "for(const p of require('./artifacts/release.json').packages) console.log([p.name,p.version,p.tarball,p.integrity].join('\t'))")
           consumer_dir=$(mktemp -d)
           node .github/scripts/downstream-release.mjs create-consumer "$RELEASE_TAG" artifacts/npm "$consumer_dir"
           rm "$consumer_dir/pnpm-workspace.yaml"
@@ -226,6 +441,18 @@ jobs:
           node "$consumer_dir/runtime.mjs"
           node_modules/.bin/tsc --project "$consumer_dir/tsconfig.json"
 
+  github-release:
+    name: Create GitHub release
+    needs: verify-published
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: downstream-release-candidate
+          path: artifacts
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
