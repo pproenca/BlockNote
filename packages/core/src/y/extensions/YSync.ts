@@ -31,21 +31,32 @@ export const mapAttributionToMark = (
     insertAt?: number;
     deleteAt?: number;
     formatAt?: number;
+    blocknoteSuggestionId?: unknown;
   },
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = { ...format };
 
   if (attribution.insert) {
-    out["y-attributed-insert"] = { userIds: attribution.insert };
+    out["y-attributed-insert"] = {
+      userIds: attribution.insert,
+      blocknoteSuggestionId: attribution.blocknoteSuggestionId ?? null,
+    };
   }
 
   if (attribution.delete) {
-    out["y-attributed-delete"] = { userIds: attribution.delete };
+    out["y-attributed-delete"] = {
+      userIds: attribution.delete,
+      blocknoteSuggestionId: attribution.blocknoteSuggestionId ?? null,
+    };
   }
 
   if (attribution.format) {
     const userIds = [...new Set(Object.values(attribution.format).flat())];
-    out["y-attributed-format"] = { userIds, format: attribution.format };
+    out["y-attributed-format"] = {
+      userIds,
+      format: attribution.format,
+      blocknoteSuggestionId: attribution.blocknoteSuggestionId ?? null,
+    };
   }
 
   return out;
