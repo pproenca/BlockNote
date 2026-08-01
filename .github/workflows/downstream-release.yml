@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -43,10 +44,52 @@ jobs:
 
       - name: Pack packages
         run: |
-          mkdir artifacts
-          pnpm --dir packages/core pack --pack-destination ../../artifacts
-          pnpm --dir packages/react pack --pack-destination ../../artifacts
-          pnpm --dir packages/server-util pack --pack-destination ../../artifacts
+          mkdir -p artifacts/github artifacts/npm
+          pnpm --dir packages/core pack --pack-destination ../../artifacts/github
+          pnpm --dir packages/react pack --pack-destination ../../artifacts/github
+          pnpm --dir packages/server-util pack --pack-destination ../../artifacts/github
+
+      - name: Prepare downstream npm packages
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_VERSION="${RELEASE_TAG#pf-v}"
+          UPSTREAM_VERSION="${RELEASE_VERSION%.*}"
+          DOWNSTREAM_REVISION="${RELEASE_VERSION##*.}"
+          PACKAGE_VERSION="${UPSTREAM_VERSION}-pf.${DOWNSTREAM_REVISION}"
+
+          pnpm --dir packages/core pkg set \
+            name=@pproenca/blocknote-core \
+            version="$PACKAGE_VERSION" \
+            homepage=https://github.com/pproenca/BlockNote \
+            repository.url=git+https://github.com/pproenca/BlockNote.git
+          pnpm --dir packages/react pkg set \
+            name=@pproenca/blocknote-react \
+            version="$PACKAGE_VERSION" \
+            homepage=https://github.com/pproenca/BlockNote \
+            repository.url=git+https://github.com/pproenca/BlockNote.git \
+            "peerDependencies[\"@blocknote/core\"]=$PACKAGE_VERSION"
+          pnpm --dir packages/server-util pkg set \
+            name=@pproenca/blocknote-server-util \
+            version="$PACKAGE_VERSION" \
+            homepage=https://github.com/pproenca/BlockNote \
+            repository.url=git+https://github.com/pproenca/BlockNote.git \
+            "peerDependencies[\"@blocknote/core\"]=$PACKAGE_VERSION" \
+            "peerDependencies[\"@blocknote/react\"]=$PACKAGE_VERSION"
+
+          pnpm --dir packages/core pack --pack-destination ../../artifacts/npm
+          pnpm --dir packages/react pack --pack-destination ../../artifacts/npm
+          pnpm --dir packages/server-util pack --pack-destination ../../artifacts/npm
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish downstream packages
+        run: |
+          for package_dir in packages/core packages/react packages/server-util; do
+            (cd "$package_dir" && vp pm publish -- --access public --tag pf --provenance --no-git-checks)
+          done
 
       - name: Create release
         env:
@@ -54,7 +97,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" artifacts/*.tgz --clobber
+            gh release upload "$RELEASE_TAG" artifacts/github/*.tgz artifacts/npm/*.tgz --clobber
           else
-            gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --generate-notes --title "$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" artifacts/github/*.tgz artifacts/npm/*.tgz --verify-tag --generate-notes --title "$RELEASE_TAG"
           fi

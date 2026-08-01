@@ -25,14 +25,26 @@ extensions. A consumer can adopt each feature without adopting the others.
 
 ## Releases
 
-Tags named `pf-v*` build immutable tarballs for `@blocknote/core`,
-`@blocknote/react`, and `@blocknote/server-util`. Consumers pin a release
-artifact instead of tracking a moving Git branch.
+Tags named `pf-v<upstream>.<revision>` publish immutable GitHub tarballs and npm
+packages. For example, `pf-v0.52.1.3` publishes npm version
+`0.52.1-pf.3`.
 
 The npm distribution will use the public packages
 `@pproenca/blocknote-core`, `@pproenca/blocknote-react`, and
 `@pproenca/blocknote-server-util`. Consumers can install them under the normal
 BlockNote import names with npm aliases, keeping application imports unchanged.
+
+```json
+{
+  "@blocknote/core": "npm:@pproenca/blocknote-core@0.52.1-pf.3",
+  "@blocknote/react": "npm:@pproenca/blocknote-react@0.52.1-pf.3",
+  "@blocknote/server-util": "npm:@pproenca/blocknote-server-util@0.52.1-pf.3"
+}
+```
+
+The release workflow uses npm trusted publishing. Each package authorizes the
+`pproenca/BlockNote` repository and `downstream-release.yml` workflow; no npm
+token is stored in GitHub.
 
 ## Updating upstream
 
