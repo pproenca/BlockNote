@@ -1,0 +1,51 @@
+name: Downstream release
+
+on:
+  push:
+    tags:
+      - "pf-v*"
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    name: Build downstream packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: ".node-version"
+          cache: true
+
+      - name: Install dependencies
+        run: vp install
+
+      - name: Build packages
+        run: |
+          vp run --filter @blocknote/core build
+          vp run --filter @blocknote/react build
+          vp run --filter @blocknote/server-util build
+
+      - name: Pack packages
+        run: |
+          mkdir artifacts
+          pnpm --dir packages/core pack --pack-destination ../../artifacts
+          pnpm --dir packages/react pack --pack-destination ../../artifacts
+          pnpm --dir packages/server-util pack --pack-destination ../../artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --generate-notes --title "$RELEASE_TAG"
