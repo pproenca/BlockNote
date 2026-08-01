@@ -5,7 +5,7 @@ import { createReactBlockSpec } from "@blocknote/react";
 import { StrictMode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 describe("BlockNoteView Rapid Remount", () => {
   let div: HTMLDivElement;
@@ -83,7 +83,10 @@ describe("BlockNoteView Rapid Remount", () => {
       });
       // yield to event loop to allow effects to run, triggering the race condition
       await new Promise((r) => setTimeout(r, 0));
+      expect(editor.domElement?.isConnected).toBe(true);
     }
     root.unmount();
+    await Promise.resolve();
+    expect(editor.domElement?.isConnected).not.toBe(true);
   });
 });

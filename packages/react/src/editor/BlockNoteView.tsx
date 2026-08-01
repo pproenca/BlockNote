@@ -319,10 +319,29 @@ export const BlockNoteViewEditor = (props: { children?: ReactNode }) => {
       // Since we are not using TipTap's React Components, we need to set up the contentComponent it expects
       // This is a simple replacement for the state management that Tiptap does internally
       editor._tiptapEditor.contentComponent = portalManager;
+      const editorElement = editor.domElement;
+
       if (element) {
+        if (editorElement === element) {
+          editorElement.tabIndex = 0;
+          return;
+        }
+
+        if (editorElement) {
+          editor.unmount();
+        }
+
         editor.mount(element, { portalTarget });
       } else {
-        editor.unmount();
+        queueMicrotask(() => {
+          if (
+            editorElement &&
+            editor.domElement === editorElement &&
+            !editorElement.isConnected
+          ) {
+            editor.unmount();
+          }
+        });
       }
     },
     [ctx.editorProps.editable, editor, portalManager, portalTarget],
