@@ -213,6 +213,19 @@ jobs:
             test "$published_integrity" = "$local_integrity"
           done
 
+      - name: Test published package set
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          consumer_dir=$(mktemp -d)
+          node .github/scripts/downstream-release.mjs create-consumer "$RELEASE_TAG" artifacts/npm "$consumer_dir"
+          rm "$consumer_dir/pnpm-workspace.yaml"
+          pnpm --dir "$consumer_dir" install --lockfile=false --ignore-scripts
+          pnpm --dir "$consumer_dir" peers check
+          node .github/scripts/downstream-release.mjs verify-consumer "$RELEASE_TAG" "$consumer_dir"
+          node "$consumer_dir/runtime.mjs"
+          node_modules/.bin/tsc --project "$consumer_dir/tsconfig.json"
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
