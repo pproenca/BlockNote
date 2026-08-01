@@ -105,15 +105,17 @@ export function cloneOwnedSnapshotValue(
   value: unknown,
   seen = new WeakMap<object, unknown>(),
 ): unknown {
-  if (value instanceof Date) {
-    return immutableSnapshotDate(value);
-  }
   if (value === null || typeof value !== "object") {
     return value;
   }
   const existing = seen.get(value);
   if (existing !== undefined) {
     return existing;
+  }
+  if (value instanceof Date) {
+    const next = immutableSnapshotDate(value);
+    seen.set(value, next);
+    return next;
   }
   const readonlyMapTarget = readonlyMapTargets.get(value);
   if (readonlyMapTarget) {
@@ -126,7 +128,11 @@ export function cloneOwnedSnapshotValue(
   if (Array.isArray(value)) {
     const next: unknown[] = [];
     seen.set(value, next);
-    next.push(...value.map((item) => cloneOwnedSnapshotValue(item, seen)));
+    const length = value.length;
+    for (let index = 0; index < length; index += 1) {
+      const item = value[index];
+      next.push(cloneOwnedSnapshotValue(item, seen));
+    }
     return Object.freeze(next);
   }
   if (value instanceof Map) {

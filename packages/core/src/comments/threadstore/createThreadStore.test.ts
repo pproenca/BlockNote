@@ -777,4 +777,29 @@ describe("createThreadStore", () => {
     expect(rejectedListener).not.toHaveBeenCalled();
     unsubscribe();
   });
+
+  it("rejects a complete source snapshot with a cursor at subscription ingress", () => {
+    const harness = createHarness(
+      snapshot([], revision(0), "partial", "initial"),
+    );
+    harness.setSource(snapshot([], revision(1), "complete", "unexpected"));
+
+    expect(() => harness.store.subscribe(vi.fn())).toThrow(
+      expect.objectContaining({ code: "invalid-document" }),
+    );
+    expect(harness.store.getSnapshot()).toMatchObject({
+      completeness: "partial",
+      nextCursor: "initial",
+      revision: revision(0),
+    });
+
+    harness.setSource(snapshot([], revision(1), "complete"));
+    const unsubscribe = harness.store.subscribe(vi.fn());
+    expect(harness.store.getSnapshot()).toMatchObject({
+      completeness: "complete",
+      revision: revision(1),
+    });
+    expect(harness.store.getSnapshot().nextCursor).toBeUndefined();
+    unsubscribe();
+  });
 });

@@ -108,6 +108,24 @@ describe("immutable snapshot values", () => {
     expect(republished.has(republished)).toBe(true);
   });
 
+  it("preserves repeated Date aliases and cross-container Map keys", () => {
+    const shared = new Date(123);
+    const clone = cloneOwnedSnapshotValue({
+      date: shared,
+      aliases: [shared, shared],
+      values: new Map([[shared, "shared"]]),
+    }) as {
+      readonly date: Date;
+      readonly aliases: readonly Date[];
+      readonly values: ReadonlyMap<Date, string>;
+    };
+
+    expect(clone.aliases[0]).toBe(clone.date);
+    expect(clone.aliases[1]).toBe(clone.date);
+    expect([...clone.values.keys()][0]).toBe(clone.date);
+    expect(clone.values.get(clone.date)).toBe("shared");
+  });
+
   it("keeps Date reads and JSON working without exposing mutation", () => {
     const facade = immutableSnapshotDate(new Date(123));
 

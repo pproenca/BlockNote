@@ -44,6 +44,11 @@ export function normalizeThreadSnapshot<TThreadMetadata, TCommentMetadata>(
   if (nextCursor !== undefined && typeof nextCursor !== "string") {
     throw invalidSnapshot("Thread snapshot cursor must be a string.");
   }
+  if (completeness === "complete" && nextCursor !== undefined) {
+    throw invalidSnapshot(
+      "A complete thread snapshot cannot expose a next cursor.",
+    );
+  }
 
   try {
     const threads = new Map<
@@ -165,10 +170,10 @@ export function cloneThread<TThreadMetadata, TCommentMetadata>(
       id,
       createdAt: immutableSnapshotDate(createdAt),
       updatedAt: immutableSnapshotDate(updatedAt),
-      comments: Object.freeze(
-        sourceComments.map((comment) =>
-          cloneComment<TCommentMetadata>(comment),
-        ),
+      comments: cloneSnapshotArray(
+        sourceComments,
+        (comment) => cloneComment<TCommentMetadata>(comment),
+        "Thread comments have invalid length.",
       ),
       resolved,
       metadata,
@@ -236,7 +241,11 @@ function cloneComment<TCommentMetadata>(
       userId,
       createdAt: immutableSnapshotDate(createdAt),
       updatedAt: immutableSnapshotDate(updatedAt),
-      reactions: Object.freeze(sourceReactions.map(cloneReaction)),
+      reactions: cloneSnapshotArray(
+        sourceReactions,
+        cloneReaction,
+        "Comment reactions have invalid length.",
+      ),
       metadata,
     };
     const comment =
@@ -303,6 +312,24 @@ function copyReactionUserIds(value: readonly unknown[]) {
     throw invalidSnapshot("Comment reaction user ids are not readable.", error);
   }
   return copy;
+}
+
+function cloneSnapshotArray<TSource, TValue>(
+  value: readonly TSource[],
+  clone: (item: TSource) => TValue,
+  invalidLengthMessage: string,
+) {
+  const length: unknown = value.length;
+  if (!Number.isSafeInteger(length) || (length as number) < 0) {
+    throw invalidSnapshot(invalidLengthMessage);
+  }
+
+  const copy: TValue[] = [];
+  for (let index = 0; index < (length as number); index += 1) {
+    const item = value[index];
+    copy.push(clone(item as TSource));
+  }
+  return Object.freeze(copy);
 }
 
 function assertReactionUserIds(value: unknown[]): asserts value is string[] {

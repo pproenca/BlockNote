@@ -51,13 +51,14 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
   ) {
     const revision = readThreadStoreRevision(initialValue);
     const initial = normalizeThreadSnapshot(initialValue, revision);
+    const publicSnapshot = createPublicThreadSnapshot(initial);
     this.revision = initial.revision;
     this.threads = initial.threads;
     this.completeness = initial.completeness;
     this.nextCursor = initial.nextCursor;
     this.seenCursors = cursorSet(initial.nextCursor);
     this.pageGenerationThreadIds = new Set(initial.threads.keys());
-    this.publicSnapshot = createPublicThreadSnapshot(initial);
+    this.publicSnapshot = publicSnapshot;
   }
 
   getSnapshot() {
@@ -78,21 +79,32 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
 
     const receipt = normalizeThreadStoreCommitReceipt(value, revision);
     const contiguous = revision.sequence === this.revision.sequence + 1;
-    this.beginGeneration(revision, contiguous);
+    const threads = contiguous ? new Map(this.threads) : new Map();
+    const completeness = contiguous ? this.completeness : "partial";
+    const pageGenerationThreadIds = new Set(threads.keys());
+    let currentDeletion: DeletionReceipt | undefined;
 
     if (receipt.change.type === "delete") {
-      this.threads.delete(receipt.change.threadId);
-      this.pageGenerationThreadIds.delete(receipt.change.threadId);
-      this.currentDeletion = Object.freeze({
+      threads.delete(receipt.change.threadId);
+      pageGenerationThreadIds.delete(receipt.change.threadId);
+      currentDeletion = Object.freeze({
         threadId: receipt.change.threadId,
         revision,
       });
     } else {
-      this.threads.set(receipt.change.thread.id, receipt.change.thread);
-      this.pageGenerationThreadIds.add(receipt.change.thread.id);
+      threads.set(receipt.change.thread.id, receipt.change.thread);
+      pageGenerationThreadIds.add(receipt.change.thread.id);
     }
 
-    this.publish();
+    this.replaceState({
+      revision,
+      threads,
+      completeness,
+      nextCursor: undefined,
+      seenCursors: new Set(),
+      pageGenerationThreadIds,
+      currentDeletion,
+    });
     return { status: "applied" };
   }
 
@@ -122,16 +134,19 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
       knownCompleteness,
     );
     const deletion = comparison === 0 ? this.currentDeletion : undefined;
-    this.beginGeneration(revision, false);
-    this.threads = new Map(incoming.threads);
+    const threads = new Map(incoming.threads);
     if (deletion && sameThreadStoreRevision(deletion.revision, revision)) {
-      this.threads.delete(deletion.threadId);
+      threads.delete(deletion.threadId);
     }
-    this.completeness = incoming.completeness;
-    this.nextCursor = incoming.nextCursor;
-    this.seenCursors = cursorSet(incoming.nextCursor);
-    this.pageGenerationThreadIds = new Set(this.threads.keys());
-    this.publish();
+    this.replaceState({
+      revision,
+      threads,
+      completeness: incoming.completeness,
+      nextCursor: incoming.nextCursor,
+      seenCursors: cursorSet(incoming.nextCursor),
+      pageGenerationThreadIds: new Set(threads.keys()),
+      currentDeletion: undefined,
+    });
     return { status: "applied" };
   }
 
@@ -182,21 +197,25 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
       generationThreadIds.add(threadId);
     }
 
+    let currentDeletion = this.currentDeletion;
     if (page.completeness === "complete") {
       for (const threadId of threads.keys()) {
         if (!generationThreadIds.has(threadId)) {
           threads.delete(threadId);
         }
       }
-      this.currentDeletion = undefined;
+      currentDeletion = undefined;
     }
 
-    this.threads = threads;
-    this.seenCursors = seenCursors;
-    this.pageGenerationThreadIds = generationThreadIds;
-    this.completeness = page.completeness;
-    this.nextCursor = page.nextCursor;
-    this.publish();
+    this.replaceState({
+      revision: this.revision,
+      threads,
+      completeness: page.completeness,
+      nextCursor: page.nextCursor,
+      seenCursors,
+      pageGenerationThreadIds: generationThreadIds,
+      currentDeletion,
+    });
     return { status: "applied" };
   }
 
@@ -204,28 +223,31 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
     return this.currentDeletion ? 1 : 0;
   }
 
-  private beginGeneration(
-    revision: BlockNoteThreadStoreRevision,
-    retainKnownRows: boolean,
-  ) {
-    if (!retainKnownRows) {
-      this.threads = new Map();
-      this.completeness = "partial";
-    }
-    this.revision = revision;
-    this.nextCursor = undefined;
-    this.seenCursors = new Set();
-    this.pageGenerationThreadIds = new Set(this.threads.keys());
-    this.currentDeletion = undefined;
-  }
-
-  private publish() {
-    this.publicSnapshot = createPublicThreadSnapshot({
-      revision: this.revision,
-      threads: this.threads,
-      completeness: this.completeness,
-      ...(this.nextCursor === undefined ? {} : { nextCursor: this.nextCursor }),
+  private replaceState(value: {
+    readonly revision: BlockNoteThreadStoreRevision;
+    readonly threads: Map<string, Thread<TThreadMetadata, TCommentMetadata>>;
+    readonly completeness: "partial" | "complete";
+    readonly nextCursor: string | undefined;
+    readonly seenCursors: Set<string>;
+    readonly pageGenerationThreadIds: Set<string>;
+    readonly currentDeletion: DeletionReceipt | undefined;
+  }) {
+    const publicSnapshot = createPublicThreadSnapshot({
+      revision: value.revision,
+      threads: value.threads,
+      completeness: value.completeness,
+      ...(value.nextCursor === undefined
+        ? {}
+        : { nextCursor: value.nextCursor }),
     });
+    this.revision = value.revision;
+    this.threads = value.threads;
+    this.completeness = value.completeness;
+    this.nextCursor = value.nextCursor;
+    this.seenCursors = value.seenCursors;
+    this.pageGenerationThreadIds = value.pageGenerationThreadIds;
+    this.currentDeletion = value.currentDeletion;
+    this.publicSnapshot = publicSnapshot;
   }
 }
 

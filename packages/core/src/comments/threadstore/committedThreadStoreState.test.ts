@@ -218,6 +218,15 @@ describe("CommittedThreadStoreState", () => {
     }
   });
 
+  it("rejects a complete initial snapshot with a next cursor", () => {
+    expect(
+      () =>
+        new CommittedThreadStoreState(
+          snapshot([], revision(1), "complete", "unexpected"),
+        ),
+    ).toThrow(expect.objectContaining({ code: "invalid-document" }));
+  });
+
   it("rejects cursor cycles without blocking a progressing page", () => {
     const activeRevision = revision(1);
     const state = new CommittedThreadStoreState(
@@ -395,6 +404,101 @@ describe("CommittedThreadStoreState", () => {
       state.getSnapshot().threads.get(target.id)?.comments[0]?.reactions[0]
         ?.userIds,
     ).toEqual(["captured"]);
+  });
+
+  it("ignores owned map overrides and captures collection indexes once", () => {
+    const target = thread("target", 1);
+    const indexReads = { body: 0, comments: 0, reactions: 0 };
+    const sourceComments = target.comments;
+    const sourceComment = captureArrayIndex(sourceComments, () => {
+      indexReads.comments += 1;
+    });
+    const sourceReactions = sourceComment.reactions;
+    const sourceReaction = captureArrayIndex(sourceReactions, () => {
+      indexReads.reactions += 1;
+    });
+    const sourceBody = sourceComment.body as Array<{
+      content: string;
+      type: string;
+    }>;
+    const sourceBodyItem = captureArrayIndex(sourceBody, () => {
+      indexReads.body += 1;
+    });
+    const mapCalls = { body: 0, comments: 0, reactions: 0 };
+
+    overrideArrayMap(sourceComments, () => {
+      mapCalls.comments += 1;
+    });
+    overrideArrayMap(sourceReactions, () => {
+      mapCalls.reactions += 1;
+    });
+    overrideArrayMap(sourceBody, () => {
+      mapCalls.body += 1;
+    });
+
+    const state = new CommittedThreadStoreState(
+      snapshot([target], revision(1), "complete"),
+    );
+    const known = state.getSnapshot().threads.get(target.id)!.comments[0]!;
+
+    expect(mapCalls).toEqual({ body: 0, comments: 0, reactions: 0 });
+    expect(indexReads).toEqual({
+      body: 1,
+      comments: 1,
+      reactions: 1,
+    });
+    expect(known).not.toBe(sourceComment);
+    expect(known.reactions[0]).not.toBe(sourceReaction);
+    expect((known.body as readonly unknown[])[0]).not.toBe(sourceBodyItem);
+
+    sourceReaction.emoji = "changed";
+    sourceBodyItem.content = "changed";
+    expect(known.reactions[0]!.emoji).toBe("👍");
+    expect((known.body as ReadonlyArray<{ content: string }>)[0]!.content).toBe(
+      "target-comment",
+    );
+  });
+
+  it("keeps an unreadable cloned commit retryable at the same revision", () => {
+    const state = new CommittedThreadStoreState(
+      snapshot([], revision(0), "complete"),
+    );
+    const invalid = thread("target", 1);
+    const invalidComments = invalid.comments;
+    let indexReads = 0;
+    let mapCalls = 0;
+    Object.defineProperty(invalidComments, 0, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        indexReads += 1;
+        throw new Error("unreadable comment");
+      },
+    });
+    Object.defineProperty(invalidComments, "map", {
+      configurable: true,
+      value(callback: unknown) {
+        mapCalls += 1;
+        if (mapCalls === 1) {
+          return invalidComments;
+        }
+        return Reflect.apply(Array.prototype.map, invalidComments, [callback]);
+      },
+    });
+
+    expect(() => state.applyCommit(upsert(revision(1), invalid))).toThrow(
+      expect.objectContaining({ code: "invalid-document" }),
+    );
+    expect(indexReads).toBe(1);
+    expect(state.getSnapshot().revision).toEqual(revision(0));
+    expect(state.getSnapshot().threads.size).toBe(0);
+
+    const corrected = thread("target", 1);
+    expect(state.applyCommit(upsert(revision(1), corrected)).status).toBe(
+      "applied",
+    );
+    expect(state.getSnapshot().revision).toEqual(revision(1));
+    expect(state.getSnapshot().threads.has(corrected.id)).toBe(true);
   });
 
   it("keeps revision retryable after an invalid captured reaction user id", () => {
@@ -625,4 +729,27 @@ function upsert(
     revision: storeRevision,
     change: { type: "upsert" as const, thread: value },
   };
+}
+
+function captureArrayIndex<T>(value: T[], onRead: () => void) {
+  const item = value[0]!;
+  Object.defineProperty(value, 0, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      onRead();
+      return item;
+    },
+  });
+  return item;
+}
+
+function overrideArrayMap<T>(value: T[], onCall: () => void) {
+  Object.defineProperty(value, "map", {
+    configurable: true,
+    value() {
+      onCall();
+      return Array.from(value);
+    },
+  });
 }
