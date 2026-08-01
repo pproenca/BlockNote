@@ -384,6 +384,8 @@ export type BlockNoteEditorOptionsForDocument<
 > &
   DocumentContextOption<Document> & {
     readonly document: Document;
+    readonly schema?: never;
+    readonly extensions?: never;
   };
 
 export type BlockNoteEditorFor<

@@ -60,7 +60,20 @@ function createLegacyEditor<
   return BlockNoteEditor.create(options);
 }
 
+function rejectGenericTypedOverrides<
+  Options extends {
+    readonly document: typeof typedDocument;
+    readonly context: RequiredContext;
+    readonly schema: typeof customSchema;
+    readonly extensions: readonly [];
+  },
+>(options: Options) {
+  // @ts-expect-error typed documents own their schema and extensions
+  return BlockNoteEditor.create(options);
+}
+
 function checkCreateTypes() {
+  const context: RequiredContext = { service: { ready: true } };
   const defaultEditor = BlockNoteEditor.create();
   expectTypeOf(defaultEditor).toEqualTypeOf<
     BlockNoteEditor<
@@ -91,14 +104,24 @@ function checkCreateTypes() {
   // @ts-expect-error malformed values are not document definitions
   BlockNoteEditor.create({ document: { id: "malformed" } });
 
-  BlockNoteEditor.create({
-    // @ts-expect-error document definitions own their schema
+  const schemaOverride = {
     document: typedDocument,
     schema: customSchema,
-    context: { service: { ready: true } },
-  });
+    context,
+  };
+  // @ts-expect-error document definitions own their schema
+  BlockNoteEditor.create(schemaOverride);
+
+  const extensionsOverride = {
+    document: typedDocument,
+    extensions: [],
+    context,
+  };
+  // @ts-expect-error document definitions own their extensions
+  BlockNoteEditor.create(extensionsOverride);
 }
 
 it("preserves legacy and typed document create overloads", () => {
   expectTypeOf(checkCreateTypes).toBeFunction();
+  expectTypeOf(rejectGenericTypedOverrides).toBeFunction();
 });
