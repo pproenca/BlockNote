@@ -8,11 +8,17 @@ import {
 } from "@blocknote/core";
 import { DependencyList, useMemo } from "react";
 
+type DirectBlockNoteEditorOptions = Partial<
+  BlockNoteEditorOptions<any, any, any>
+> & {
+  readonly document?: never;
+};
+
 /**
  * Hook to instantiate a BlockNote Editor instance in React
  */
 export const useCreateBlockNote = <
-  Options extends Partial<BlockNoteEditorOptions<any, any, any>> | undefined,
+  Options extends DirectBlockNoteEditorOptions | undefined,
 >(
   options: Options = {} as Options,
   deps: DependencyList = [],
@@ -26,7 +32,8 @@ export const useCreateBlockNote = <
       DefaultStyleSchema
     > => {
   return useMemo(() => {
-    const editor = BlockNoteEditor.create(options) as any;
+    const directOptions: DirectBlockNoteEditorOptions = options ?? {};
+    const editor = BlockNoteEditor.create(directOptions) as any;
     if (window) {
       // for testing / dev purposes
       (window as any).ProseMirror = editor._tiptapEditor;
