@@ -9,6 +9,11 @@ Welcome to BlockNote! The open source Block-Based
 React rich text editor. Easily add a modern text editing experience to your app.
 </p>
 
+> [!NOTE]
+> This repository is an open downstream of TypeCellOS/BlockNote. Its `main`
+> branch carries small, optional extension seams while continuing to merge
+> upstream releases. See [DOWNSTREAM.md](./DOWNSTREAM.md).
+
 <p align="center">
   <a href="https://www.blocknotejs.org">
     Homepage

@@ -1,7 +1,8 @@
 # Downstream extensions
 
-This fork tracks `TypeCellOS/BlockNote`. Its `main` branch mirrors upstream;
-downstream releases are cut from a short-lived integration branch.
+This fork tracks `TypeCellOS/BlockNote`. Its public `main` branch contains the
+downstream changes and is the branch consumers should inspect. The `upstream`
+remote remains the source for BlockNote updates.
 
 ## Design rules
 
@@ -25,12 +26,18 @@ extensions. A consumer can adopt each feature without adopting the others.
 ## Releases
 
 Tags named `pf-v*` build immutable tarballs for `@blocknote/core`,
-`@blocknote/react`, and `@blocknote/server-util`. Consumers pin the release URL
-and commit instead of tracking a moving branch.
+`@blocknote/react`, and `@blocknote/server-util`. Consumers pin a release
+artifact instead of tracking a moving Git branch.
+
+The npm distribution will use the public packages
+`@pproenca/blocknote-core`, `@pproenca/blocknote-react`, and
+`@pproenca/blocknote-server-util`. Consumers can install them under the normal
+BlockNote import names with npm aliases, keeping application imports unchanged.
 
 ## Updating upstream
 
-1. Fast-forward `main` from `TypeCellOS/BlockNote`.
-2. Rebase the downstream integration branch onto `main`.
+1. Fetch `upstream/main`.
+2. Merge `upstream/main` into this fork's `main` without rewriting published
+   history.
 3. Run BlockNote's build, lint, unit, and relevant browser tests.
 4. Tag a new `pf-v*` release and update consumers to its immutable artifacts.
