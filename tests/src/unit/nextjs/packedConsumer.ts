@@ -301,12 +301,173 @@ const installConsumer = (consumerDirectory: string) => {
   );
 };
 
+type LocalPackageSource = {
+  specifier: string;
+  tarballPath: string;
+};
+
+const isInsideDirectory = (directory: string, candidate: string) => {
+  const relative = path.relative(directory, candidate);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`))
+  );
+};
+
+const readLocalPackageSources = (
+  consumerDirectory: string,
+  packageCases: readonly PackedPackageCase[],
+) => {
+  const manifest = JSON.parse(
+    readFileSync(path.join(consumerDirectory, "package.json"), "utf8"),
+  ) as { dependencies?: Record<string, unknown> };
+
+  return new Map(
+    packageCases.map(({ packageName }) => {
+      const specifier = manifest.dependencies?.[packageName];
+      if (
+        typeof specifier !== "string" ||
+        !specifier.startsWith("file:") ||
+        specifier === "file:"
+      ) {
+        throw new Error(
+          `${packageName} must resolve from a local tarball, received ${String(specifier)}`,
+        );
+      }
+
+      return [
+        packageName,
+        {
+          specifier,
+          tarballPath: path.resolve(
+            consumerDirectory,
+            specifier.slice("file:".length),
+          ),
+        },
+      ] as const;
+    }),
+  );
+};
+
+const writeHermeticWorkspace = (
+  consumerDirectory: string,
+  packageCases: readonly PackedPackageCase[],
+) => {
+  const sources = readLocalPackageSources(consumerDirectory, packageCases);
+  for (const [packageName, source] of sources) {
+    if (!isInsideDirectory(consumerDirectory, source.tarballPath)) {
+      throw new Error(
+        `${packageName} tarball is outside the fresh consumer: ${source.tarballPath}`,
+      );
+    }
+  }
+
+  writeFileSync(
+    path.join(consumerDirectory, "pnpm-workspace.yaml"),
+    `${JSON.stringify(
+      {
+        packages: ["."],
+        linkWorkspacePackages: false,
+        preferWorkspacePackages: false,
+        overrides: Object.fromEntries(
+          [...sources].map(([packageName, { specifier }]) => [
+            packageName,
+            specifier,
+          ]),
+        ),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  return sources;
+};
+
+const assertStagedTarballs = (
+  sources: ReadonlyMap<string, LocalPackageSource>,
+  artifacts: PackedArtifactSet,
+) => {
+  for (const [packageName, source] of sources) {
+    if (!existsSync(source.tarballPath)) {
+      throw new Error(
+        `${packageName} local tarball is missing: ${source.tarballPath}`,
+      );
+    }
+
+    const suppliedTarball = artifactFor(artifacts, packageName).tarballPath;
+    if (
+      !readFileSync(source.tarballPath).equals(readFileSync(suppliedTarball))
+    ) {
+      throw new Error(
+        `${packageName} staged tarball does not match ${suppliedTarball}`,
+      );
+    }
+  }
+};
+
+const findInstalledBlockNotePackages = (consumerDirectory: string) => {
+  const nodeModules = path.join(consumerDirectory, "node_modules");
+  const virtualStore = path.join(nodeModules, ".pnpm");
+  const scopeDirectories = [
+    path.join(nodeModules, "@blocknote"),
+    path.join(virtualStore, "node_modules", "@blocknote"),
+  ];
+
+  if (existsSync(virtualStore)) {
+    for (const entry of readdirSync(virtualStore, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        scopeDirectories.push(
+          path.join(virtualStore, entry.name, "node_modules", "@blocknote"),
+        );
+      }
+    }
+  }
+
+  const references = new Map<string, Set<string>>();
+  for (const scopeDirectory of scopeDirectories) {
+    if (!existsSync(scopeDirectory)) {
+      continue;
+    }
+
+    for (const entry of readdirSync(scopeDirectory, { withFileTypes: true })) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+        continue;
+      }
+
+      const packageName = `@blocknote/${entry.name}`;
+      const packageReferences = references.get(packageName) ?? new Set();
+      packageReferences.add(path.join(scopeDirectory, entry.name));
+      references.set(packageName, packageReferences);
+    }
+  }
+
+  return references;
+};
+
 export const inspectInstalledPackages = (
   consumerDirectory: string,
   artifacts: PackedArtifactSet,
   packageCases: readonly PackedPackageCase[] = packedPackageCases,
-) =>
-  packageCases.map(({ packageName }) => {
+  sources?: ReadonlyMap<string, LocalPackageSource>,
+) => {
+  const installedPackages = findInstalledBlockNotePackages(consumerDirectory);
+  const expectedPackageNames = new Set(
+    packageCases.map(({ packageName }) => packageName),
+  );
+  const unexpectedPackages = [...installedPackages.keys()].filter(
+    (packageName) => !expectedPackageNames.has(packageName),
+  );
+  if (unexpectedPackages.length > 0) {
+    throw new Error(
+      `Fresh consumer installed unexpected BlockNote packages: ${unexpectedPackages.join(", ")}`,
+    );
+  }
+
+  const consumerPath = realpathSync(consumerDirectory);
+  return packageCases.map(({ packageName }) => {
     const artifact = artifactFor(artifacts, packageName);
     const installedDirectory = path.join(
       consumerDirectory,
@@ -318,25 +479,67 @@ export const inspectInstalledPackages = (
       throw new Error(`Fresh consumer did not install ${packageName}`);
     }
 
-    const installedPath = realpathSync(installedDirectory);
-    const expectedRoot = `${realpathSync(consumerDirectory)}${path.sep}`;
-    if (!installedPath.startsWith(expectedRoot)) {
+    const references = installedPackages.get(packageName);
+    if (!references || references.size === 0) {
+      throw new Error(`Fresh consumer has no installation of ${packageName}`);
+    }
+
+    const realPaths = new Set(
+      [...references].map((entry) => realpathSync(entry)),
+    );
+    if (realPaths.size !== 1) {
+      throw new Error(
+        `${packageName} has ${realPaths.size} installed instances:\n${[...realPaths].join("\n")}`,
+      );
+    }
+
+    const installedPath = [...realPaths][0]!;
+    if (!isInsideDirectory(consumerPath, installedPath)) {
       throw new Error(
         `${packageName} resolved outside the fresh consumer: ${installedPath}`,
+      );
+    }
+    if (realpathSync(installedDirectory) !== installedPath) {
+      throw new Error(
+        `${packageName} top-level dependency does not use its only installed instance`,
       );
     }
 
     const manifest = JSON.parse(
       readFileSync(path.join(installedDirectory, "package.json"), "utf8"),
-    ) as { version?: unknown };
+    ) as { name?: unknown; version?: unknown };
+    if (manifest.name !== packageName) {
+      throw new Error(
+        `${packageName} installed manifest is named ${String(manifest.name)}`,
+      );
+    }
     if (manifest.version !== artifact.version) {
       throw new Error(
         `${packageName} installed version ${String(manifest.version)}, expected packed ${artifact.version}`,
       );
     }
 
+    const source = sources?.get(packageName);
+    if (sources && !source) {
+      throw new Error(`${packageName} has no expected local tarball source`);
+    }
+    if (source) {
+      const tarballName = path.basename(source.tarballPath);
+      const localStoreEntry = installedPath
+        .split(path.sep)
+        .find(
+          (entry) => entry.includes("file+") && entry.includes(tarballName),
+        );
+      if (!localStoreEntry) {
+        throw new Error(
+          `${packageName} installed from a non-tarball path: ${installedPath}; expected ${source.tarballPath}`,
+        );
+      }
+    }
+
     return { packageName, version: artifact.version, installedPath };
   });
+};
 
 const createRuntimeProbe = () => {
   const entries = packedPackageCases.flatMap(({ packageName, publicImports }) =>
@@ -494,11 +697,16 @@ export const prepareNextConsumer = (artifacts: PackedArtifactSet) => {
       ]),
     );
 
+    const packageCases = [...packedPackageCases, ...nextOnlyPackageCases];
+    const sources = writeHermeticWorkspace(consumerDirectory, packageCases);
     run("bash", ["setup.sh"], consumerDirectory, environment);
-    inspectInstalledPackages(consumerDirectory, artifacts, [
-      ...packedPackageCases,
-      ...nextOnlyPackageCases,
-    ]);
+    assertStagedTarballs(sources, artifacts);
+    inspectInstalledPackages(
+      consumerDirectory,
+      artifacts,
+      packageCases,
+      sources,
+    );
 
     return consumerDirectory;
   } catch (error) {
