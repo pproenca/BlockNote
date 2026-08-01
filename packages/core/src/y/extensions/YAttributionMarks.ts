@@ -217,6 +217,7 @@ export const YAttributedInsertion = Mark.create<{
   addAttributes() {
     return {
       userIds: { default: null },
+      blocknoteSuggestionId: { default: null, rendered: false },
     };
   },
   addMarkView() {
@@ -245,6 +246,7 @@ export const YAttributedDeletion = Mark.create<{
   addAttributes() {
     return {
       userIds: { default: null },
+      blocknoteSuggestionId: { default: null, rendered: false },
     };
   },
   addMarkView() {
@@ -274,6 +276,7 @@ export const YAttributedFormat = Mark.create<{
     return {
       userIds: { default: null },
       format: { default: null },
+      blocknoteSuggestionId: { default: null, rendered: false },
     };
   },
   addMarkView() {

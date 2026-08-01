@@ -13,7 +13,7 @@ import {
 import { normalizeToUserStore, UserStoreOrResolver } from "../../user/index.js";
 import { AttributionExtension } from "./AttributionExtension.js";
 import { RelativePositionMappingExtension } from "./RelativePositionMapping.js";
-import { SuggestionsExtension } from "./Suggestions.js";
+import { createSuggestionsRuntimeExtension } from "./suggestions/runtime.js";
 import { createYjsVersioningAdapter } from "./Versioning.js";
 import { CollaborationUser, YCursorExtension } from "./YCursorPlugin.js";
 import type { GetAttributionMarkClassName } from "./YAttributionMarks.js";
@@ -95,7 +95,7 @@ export const CollaborationExtension = createExtension(
       userStore,
       blockNoteExtensions: [
         options.suggestionDoc
-          ? SuggestionsExtension(optionsWithUserStore)
+          ? createSuggestionsRuntimeExtension(optionsWithUserStore)
           : null,
         RelativePositionMappingExtension(),
         YSyncExtension(optionsWithUserStore),

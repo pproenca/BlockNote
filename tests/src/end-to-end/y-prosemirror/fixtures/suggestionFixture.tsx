@@ -438,10 +438,17 @@ function pmNodeToXml(node: PMNode): string {
 }
 
 function formatAttrs(attrs: Record<string, unknown>): string {
+  // Stable native grouping metadata is intentionally absent from public HTML
+  // and these user-facing snapshots.
   // Sort by key so attribute order is deterministic across runs (attribute
   // order is not semantically meaningful).
   return Object.entries(attrs)
-    .filter(([, v]) => v !== null && v !== undefined)
+    .filter(
+      ([key, value]) =>
+        key !== "blocknoteSuggestionId" &&
+        value !== null &&
+        value !== undefined,
+    )
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([k, v]) => ` ${k}="${escapeXml(String(v))}"`)
     .join("");
