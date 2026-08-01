@@ -73,6 +73,11 @@ export interface BlockNoteEditorOptions<
   SSchema extends StyleSchema,
 > {
   /**
+   * Typed documents use {@link BlockNoteEditorOptionsForDocument}.
+   */
+  readonly document?: never;
+
+  /**
    * Whether changes to blocks (like indentation, creating lists, changing headings) should be animated or not. Defaults to `true`.
    *
    * @default true
@@ -375,7 +380,7 @@ export type BlockNoteEditorOptionsForDocument<
       DocumentSchema<Document>["style"]
     >
   >,
-  "schema" | "extensions" | "context"
+  "schema" | "extensions" | "context" | "document"
 > &
   DocumentContextOption<Document> & {
     readonly document: Document;
@@ -395,7 +400,10 @@ type BlockNoteEditorRuntimeOptions<
   BSchema extends BlockSchema,
   ISchema extends InlineContentSchema,
   SSchema extends StyleSchema,
-> = Partial<BlockNoteEditorOptions<BSchema, ISchema, SSchema>> & {
+> = Omit<
+  Partial<BlockNoteEditorOptions<BSchema, ISchema, SSchema>>,
+  "document"
+> & {
   readonly document?: AnyBlockNoteDocumentDefinition;
 };
 
@@ -485,7 +493,7 @@ export class BlockNoteEditor<
   public static create<
     Options extends Partial<BlockNoteEditorOptions<any, any, any>> | undefined,
   >(
-    options?: Options extends { readonly document: unknown } ? never : Options,
+    options?: Options,
   ): Options extends {
     schema: CustomBlockNoteSchema<infer BSchema, infer ISchema, infer SSchema>;
   }
@@ -510,7 +518,8 @@ export class BlockNoteEditor<
   ) {
     super();
 
-    this.documentDefinition = options.document;
+    const { document: documentDefinition, ...legacyOptions } = options;
+    this.documentDefinition = documentDefinition;
     this.dictionary = options.dictionary || en;
     this.settings = {
       tables: {
@@ -524,16 +533,16 @@ export class BlockNoteEditor<
     // apply defaults
     const newOptions = {
       defaultStyles: true,
-      ...options,
+      ...legacyOptions,
       schema:
-        options.document?.schema ||
+        documentDefinition?.schema ||
         options.schema ||
         (BlockNoteSchema.create() as unknown as CustomBlockNoteSchema<
           BSchema,
           ISchema,
           SSchema
         >),
-      extensions: options.document?.extensions ?? options.extensions,
+      extensions: documentDefinition?.extensions ?? options.extensions,
       placeholders: {
         ...this.dictionary.placeholders,
         ...options.placeholders,
