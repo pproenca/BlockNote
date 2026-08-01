@@ -73,4 +73,37 @@ describe("immutable snapshot values", () => {
     expect(invalid.getTime()).toBeNaN();
     expect(invalid.toJSON()).toBeNull();
   });
+
+  it("rejects aliased mutators and arbitrary Date prototype accessors", () => {
+    const mutatorAlias = Symbol("mutatorAlias");
+    const accessorAlias = Symbol("accessorAlias");
+    const setTime = Reflect.get(Date.prototype, "setTime");
+    let accessorReads = 0;
+    Object.defineProperty(Date.prototype, mutatorAlias, {
+      configurable: true,
+      value: setTime,
+    });
+    Object.defineProperty(Date.prototype, accessorAlias, {
+      configurable: true,
+      get() {
+        accessorReads += 1;
+        return setTime;
+      },
+    });
+
+    try {
+      const facade = immutableSnapshotDate(new Date(123));
+      const properties = facade as unknown as Record<PropertyKey, unknown>;
+
+      expect(() =>
+        (properties[mutatorAlias] as (value: number) => number)(456),
+      ).toThrow("immutable");
+      expect(() => properties[accessorAlias]).toThrow("immutable");
+      expect(accessorReads).toBe(0);
+      expect(facade.getTime()).toBe(123);
+    } finally {
+      Reflect.deleteProperty(Date.prototype, mutatorAlias);
+      Reflect.deleteProperty(Date.prototype, accessorAlias);
+    }
+  });
 });

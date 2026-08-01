@@ -1,25 +1,52 @@
 import { BlockNoteError } from "../../platform/BlockNoteError.js";
 
-const dateMutationMethods = new Set<PropertyKey>([
-  "setDate",
-  "setFullYear",
-  "setHours",
-  "setMilliseconds",
-  "setMinutes",
-  "setMonth",
-  "setSeconds",
-  "setTime",
-  "setUTCDate",
-  "setUTCFullYear",
-  "setUTCHours",
-  "setUTCMilliseconds",
-  "setUTCMinutes",
-  "setUTCMonth",
-  "setUTCSeconds",
-  "setYear",
-]);
+const capturedDateReadOperationNames = [
+  "getDate",
+  "getDay",
+  "getFullYear",
+  "getHours",
+  "getMilliseconds",
+  "getMinutes",
+  "getMonth",
+  "getSeconds",
+  "getTime",
+  "getTimezoneOffset",
+  "getUTCDate",
+  "getUTCDay",
+  "getUTCFullYear",
+  "getUTCHours",
+  "getUTCMilliseconds",
+  "getUTCMinutes",
+  "getUTCMonth",
+  "getUTCSeconds",
+  "toDateString",
+  "toISOString",
+  "toLocaleDateString",
+  "toLocaleString",
+  "toLocaleTimeString",
+  "toString",
+  "toTimeString",
+  "toUTCString",
+  "valueOf",
+] as const;
+const capturedDateReadOperations = new Map<PropertyKey, CallableFunction>(
+  capturedDateReadOperationNames.map((property) => [
+    property,
+    captureDateOperation(property),
+  ]),
+);
+const capturedDateToISOString = captureDateOperation("toISOString");
+const capturedDateToString = captureDateOperation("toString");
 const readonlyMapTargets = new WeakMap<object, Map<unknown, unknown>>();
 const readonlySetTargets = new WeakMap<object, Set<unknown>>();
+
+function captureDateOperation(property: PropertyKey) {
+  const operation = Reflect.get(Date.prototype, property);
+  if (typeof operation !== "function") {
+    throw new TypeError(`Date operation ${String(property)} is unavailable.`);
+  }
+  return operation as CallableFunction;
+}
 
 export function immutableSnapshotDate(value: Date) {
   let time: number;
@@ -32,20 +59,44 @@ export function immutableSnapshotDate(value: Date) {
   Object.freeze(target);
   return new Proxy(target, {
     get(date, property) {
-      if (dateMutationMethods.has(property)) {
-        return rejectSnapshotMutation;
-      }
       if (property === "constructor") {
         return Date;
       }
-      const result = Reflect.get(date, property, date);
-      return typeof result === "function" ? result.bind(date) : result;
+      if (property === "toJSON") {
+        return () =>
+          Number.isFinite(time)
+            ? Reflect.apply(capturedDateToISOString, date, [])
+            : null;
+      }
+      if (property === Symbol.toPrimitive) {
+        return (hint: string) => {
+          if (hint === "number") {
+            return time;
+          }
+          if (hint === "default" || hint === "string") {
+            return Reflect.apply(capturedDateToString, date, []);
+          }
+          throw new TypeError("Invalid Date primitive hint.");
+        };
+      }
+      const operation = capturedDateReadOperations.get(property);
+      if (operation) {
+        return (...args: unknown[]) => Reflect.apply(operation, date, args);
+      }
+      if (property in date) {
+        return rejectSnapshotDateProperty(property);
+      }
+      return undefined;
     },
     set: rejectSnapshotMutation,
     defineProperty: rejectSnapshotMutation,
     deleteProperty: rejectSnapshotMutation,
     setPrototypeOf: rejectSnapshotMutation,
   });
+}
+
+function rejectSnapshotDateProperty(_property: PropertyKey): never {
+  throw new TypeError("Thread store snapshot Dates are immutable.");
 }
 
 export function cloneOwnedSnapshotValue(

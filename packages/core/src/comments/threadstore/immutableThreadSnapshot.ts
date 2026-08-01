@@ -259,27 +259,56 @@ function cloneComment<TCommentMetadata>(
 function cloneReaction(value: BlockNoteCommentReaction) {
   let emoji: unknown;
   let createdAt: unknown;
-  let userIds: readonly string[];
+  let sourceUserIds: unknown;
   try {
     emoji = value.emoji;
     createdAt = value.createdAt;
-    userIds = value.userIds;
+    sourceUserIds = value.userIds;
   } catch (error) {
     throw invalidSnapshot("Comment reaction is not readable.", error);
   }
   if (
     typeof emoji !== "string" ||
     !(createdAt instanceof Date) ||
-    !Array.isArray(userIds) ||
-    userIds.some((userId) => typeof userId !== "string")
+    !Array.isArray(sourceUserIds)
   ) {
     throw invalidSnapshot("Comment reaction has invalid fields.");
   }
+  const userIds = copyReactionUserIds(sourceUserIds);
+  assertReactionUserIds(userIds);
   return Object.freeze({
     emoji,
     createdAt: immutableSnapshotDate(createdAt),
-    userIds: Object.freeze([...userIds]),
+    userIds: Object.freeze(userIds),
   });
+}
+
+function copyReactionUserIds(value: readonly unknown[]) {
+  let length: unknown;
+  try {
+    length = value.length;
+  } catch (error) {
+    throw invalidSnapshot("Comment reaction user ids are not readable.", error);
+  }
+  if (!Number.isSafeInteger(length) || (length as number) < 0) {
+    throw invalidSnapshot("Comment reaction user ids have invalid length.");
+  }
+
+  const copy: unknown[] = [];
+  try {
+    for (let index = 0; index < (length as number); index += 1) {
+      copy.push(value[index]);
+    }
+  } catch (error) {
+    throw invalidSnapshot("Comment reaction user ids are not readable.", error);
+  }
+  return copy;
+}
+
+function assertReactionUserIds(value: unknown[]): asserts value is string[] {
+  if (value.some((userId) => typeof userId !== "string")) {
+    throw invalidSnapshot("Comment reaction has invalid fields.");
+  }
 }
 
 function invalidSnapshot(message: string, cause?: unknown) {

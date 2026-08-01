@@ -218,6 +218,62 @@ describe("CommittedThreadStoreState", () => {
     }
   });
 
+  it("rejects cursor cycles without blocking a progressing page", () => {
+    const activeRevision = revision(1);
+    const state = new CommittedThreadStoreState(
+      snapshot([], activeRevision, "partial", "A"),
+    );
+
+    expect(
+      state.applyPage(snapshot([], activeRevision, "partial", "B"), {
+        revision: activeRevision,
+        cursor: "A",
+      }).status,
+    ).toBe("applied");
+    const beforeCycle = state.getSnapshot();
+    expect(() =>
+      state.applyPage(snapshot([], activeRevision, "partial", "A"), {
+        revision: activeRevision,
+        cursor: "B",
+      }),
+    ).toThrow(expect.objectContaining({ code: "invalid-document" }));
+    expect(state.getSnapshot()).toBe(beforeCycle);
+
+    expect(
+      state.applyPage(snapshot([], activeRevision, "partial", "C"), {
+        revision: activeRevision,
+        cursor: "B",
+      }).status,
+    ).toBe("applied");
+    expect(
+      state.applyPage(snapshot([], activeRevision, "complete"), {
+        revision: activeRevision,
+        cursor: "C",
+      }).status,
+    ).toBe("applied");
+  });
+
+  it("resets cursor history for a newer source generation", () => {
+    const firstRevision = revision(1);
+    const secondRevision = revision(2);
+    const state = new CommittedThreadStoreState(
+      snapshot([], firstRevision, "partial", "A"),
+    );
+    state.applyPage(snapshot([], firstRevision, "partial", "B"), {
+      revision: firstRevision,
+      cursor: "A",
+    });
+
+    state.applySourceSnapshot(snapshot([], secondRevision, "partial", "A"));
+
+    expect(
+      state.applyPage(snapshot([], secondRevision, "partial", "B"), {
+        revision: secondRevision,
+        cursor: "A",
+      }).status,
+    ).toBe("applied");
+  });
+
   it("captures snapshot and row properties once before normalization", () => {
     const source = thread("captured", 1);
     const fieldReads = new Map<PropertyKey, number>();
@@ -312,6 +368,64 @@ describe("CommittedThreadStoreState", () => {
     state.applyCommit(receipt);
 
     expect(reads).toEqual({ revision: 1, change: 1, type: 1, thread: 1 });
+  });
+
+  it("captures each reaction user id index once before publication", () => {
+    const state = new CommittedThreadStoreState(
+      snapshot([], revision(0), "complete"),
+    );
+    const changingUserIds = ["placeholder"];
+    let indexReads = 0;
+    Object.defineProperty(changingUserIds, 0, {
+      configurable: true,
+      get() {
+        indexReads += 1;
+        return indexReads === 1 ? "captured" : 42;
+      },
+    });
+    const target = thread("target", 1);
+    target.comments[0]!.reactions[0]!.userIds = changingUserIds;
+
+    expect(state.applyCommit(upsert(revision(1), target)).status).toBe(
+      "applied",
+    );
+
+    expect(indexReads).toBe(1);
+    expect(
+      state.getSnapshot().threads.get(target.id)?.comments[0]?.reactions[0]
+        ?.userIds,
+    ).toEqual(["captured"]);
+  });
+
+  it("keeps revision retryable after an invalid captured reaction user id", () => {
+    const state = new CommittedThreadStoreState(
+      snapshot([], revision(0), "complete"),
+    );
+    const changingUserIds = ["placeholder"];
+    let indexReads = 0;
+    Object.defineProperty(changingUserIds, 0, {
+      configurable: true,
+      get() {
+        indexReads += 1;
+        return indexReads === 1 ? 42 : "changed";
+      },
+    });
+    const invalid = thread("target", 1);
+    invalid.comments[0]!.reactions[0]!.userIds = changingUserIds;
+
+    expect(() => state.applyCommit(upsert(revision(1), invalid))).toThrow(
+      expect.objectContaining({ code: "invalid-document" }),
+    );
+    expect(indexReads).toBe(1);
+    expect(state.getSnapshot().revision).toEqual(revision(0));
+    expect(state.getSnapshot().threads.size).toBe(0);
+
+    const corrected = thread("target", 1);
+    expect(state.applyCommit(upsert(revision(1), corrected)).status).toBe(
+      "applied",
+    );
+    expect(state.getSnapshot().revision).toEqual(revision(1));
+    expect(state.getSnapshot().threads.has(corrected.id)).toBe(true);
   });
 
   it("validates revision shape and bounds tokens", () => {

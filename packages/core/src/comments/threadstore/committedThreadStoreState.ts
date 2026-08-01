@@ -38,6 +38,7 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
   private threads: Map<string, Thread<TThreadMetadata, TCommentMetadata>>;
   private completeness: "partial" | "complete";
   private nextCursor: string | undefined;
+  private seenCursors: Set<string>;
   private pageGenerationThreadIds: Set<string>;
   private currentDeletion: DeletionReceipt | undefined;
   private publicSnapshot: BlockNoteThreadSnapshot<
@@ -54,6 +55,7 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
     this.threads = initial.threads;
     this.completeness = initial.completeness;
     this.nextCursor = initial.nextCursor;
+    this.seenCursors = cursorSet(initial.nextCursor);
     this.pageGenerationThreadIds = new Set(initial.threads.keys());
     this.publicSnapshot = createPublicThreadSnapshot(initial);
   }
@@ -127,6 +129,7 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
     }
     this.completeness = incoming.completeness;
     this.nextCursor = incoming.nextCursor;
+    this.seenCursors = cursorSet(incoming.nextCursor);
     this.pageGenerationThreadIds = new Set(this.threads.keys());
     this.publish();
     return { status: "applied" };
@@ -161,8 +164,12 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
     }
 
     const page = normalizeThreadSnapshot(value, responseRevision);
-    assertPageProgress(page, request.cursor);
+    assertPageProgress(page, request.cursor, this.seenCursors);
     const threads = new Map(this.threads);
+    const seenCursors = new Set(this.seenCursors);
+    if (page.nextCursor !== undefined) {
+      seenCursors.add(page.nextCursor);
+    }
     const generationThreadIds = new Set(this.pageGenerationThreadIds);
     for (const [threadId, thread] of page.threads) {
       if (
@@ -185,6 +192,7 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
     }
 
     this.threads = threads;
+    this.seenCursors = seenCursors;
     this.pageGenerationThreadIds = generationThreadIds;
     this.completeness = page.completeness;
     this.nextCursor = page.nextCursor;
@@ -206,6 +214,7 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
     }
     this.revision = revision;
     this.nextCursor = undefined;
+    this.seenCursors = new Set();
     this.pageGenerationThreadIds = new Set(this.threads.keys());
     this.currentDeletion = undefined;
   }
@@ -226,6 +235,7 @@ function assertPageProgress(
     readonly nextCursor?: string;
   },
   requestCursor: string | undefined,
+  seenCursors: ReadonlySet<string>,
 ) {
   if (page.completeness === "complete" && page.nextCursor !== undefined) {
     throw invalidThreadStoreState(
@@ -234,10 +244,16 @@ function assertPageProgress(
   }
   if (
     page.completeness === "partial" &&
-    (page.nextCursor === undefined || page.nextCursor === requestCursor)
+    (page.nextCursor === undefined ||
+      page.nextCursor === requestCursor ||
+      seenCursors.has(page.nextCursor))
   ) {
     throw invalidThreadStoreState(
-      "A partial thread page must advance to a new cursor.",
+      "A partial thread page must advance to an unseen cursor.",
     );
   }
+}
+
+function cursorSet(cursor: string | undefined) {
+  return cursor === undefined ? new Set<string>() : new Set([cursor]);
 }
