@@ -14,6 +14,17 @@ const typedArrayByteLengthDescriptor = Object.getOwnPropertyDescriptor(
   Object.getPrototypeOf(Uint8Array.prototype) as object,
   "byteLength",
 )!;
+const typedArrayBrandDescriptor = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype) as object,
+  Symbol.toStringTag,
+)!;
+const reflectApply = Reflect.apply;
+// oxlint-disable-next-line typescript/unbound-method -- invoked with an explicit receiver
+const typedArrayBrand = typedArrayBrandDescriptor.get!;
+// oxlint-disable-next-line typescript/unbound-method -- invoked with an explicit receiver
+const typedArrayByteLength = typedArrayByteLengthDescriptor.get!;
+// oxlint-disable-next-line typescript/unbound-method -- invoked with an explicit receiver
+const uint8ArraySet = Uint8Array.prototype.set;
 
 const frameKindCodes = {
   checkpoint: 1,
@@ -43,18 +54,20 @@ function oversizedFrame() {
 
 function getByteLength(value: unknown) {
   try {
-    if (!(value instanceof Uint8Array)) {
+    if (reflectApply(typedArrayBrand, value, []) !== "Uint8Array") {
       throw new TypeError();
     }
-    return typedArrayByteLengthDescriptor.get!.call(value) as number;
+    return reflectApply(typedArrayByteLength, value, []) as number;
   } catch {
     throw invalidFrame("BlockNote persistence bytes must be a Uint8Array.");
   }
 }
 
-function copyBytes(value: Uint8Array) {
+function copyBytes(value: Uint8Array, byteLength: number) {
   try {
-    return new Uint8Array(value);
+    const copy = new Uint8Array(byteLength);
+    reflectApply(uint8ArraySet, copy, [value]);
+    return copy;
   } catch {
     throw invalidFrame("BlockNote persistence bytes are invalid.");
   }
@@ -81,7 +94,7 @@ export function encodeBlockNotePersistenceFrame(
   if (inputLength > BLOCK_NOTE_PERSISTENCE_MAX_PAYLOAD_BYTES) {
     throw oversizedFrame();
   }
-  const payload = copyBytes(value);
+  const payload = copyBytes(value, inputLength);
   if (payload.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_PAYLOAD_BYTES) {
     throw oversizedFrame();
   }
@@ -106,7 +119,7 @@ export function decodeBlockNotePersistenceFrame(
   if (inputLength > BLOCK_NOTE_PERSISTENCE_MAX_FRAME_BYTES) {
     throw oversizedFrame();
   }
-  const frame = copyBytes(value);
+  const frame = copyBytes(value, inputLength);
   if (frame.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_FRAME_BYTES) {
     throw oversizedFrame();
   }

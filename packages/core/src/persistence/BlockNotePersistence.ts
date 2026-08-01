@@ -3,6 +3,7 @@ import {
   decodeBlockNotePersistenceFrame,
   type BlockNotePersistenceFrameKind,
 } from "./BlockNotePersistenceFrame.js";
+import { blockNotePersistenceRuntime } from "./BlockNotePersistenceRuntime.js";
 
 declare const blockNoteOpaque: unique symbol;
 
@@ -41,7 +42,10 @@ interface StoredFrame {
   readonly bytes: Uint8Array;
 }
 
-const storedFrames = new WeakMap<BlockNotePersistenceValue, StoredFrame>();
+const storedFrames = blockNotePersistenceRuntime.storedFrames as WeakMap<
+  BlockNotePersistenceValue,
+  StoredFrame
+>;
 
 function createCheckpoint(frame: Uint8Array) {
   const value = Object.freeze({

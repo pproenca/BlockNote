@@ -350,6 +350,7 @@ function createConsumerRuntimeProbe(release) {
 
   return `
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 if ("window" in globalThis || "document" in globalThis) {
@@ -379,6 +380,101 @@ for (const packageDefinition of packages) {
       throw new Error(packageDefinition.upstreamName + " is missing export " + exportName);
     }
   }
+}
+
+const require = createRequire(import.meta.url);
+const persistenceModules = [
+  await import("@blocknote/core/persistence"),
+  require("@blocknote/core/persistence"),
+  await import("@blocknote/server-util/headless"),
+  require("@blocknote/server-util/headless"),
+];
+const checkpointFrame = Uint8Array.from([66, 78, 1, 1, 0, 0, 0, 1, 7]);
+const changeFrame = Uint8Array.from([66, 78, 1, 2, 0, 0, 0, 1, 9]);
+const values = [
+  ...persistenceModules.map(({ blockNotePersistence }) =>
+    blockNotePersistence.checkpointFromBytes(checkpointFrame),
+  ),
+  ...persistenceModules.map(({ blockNotePersistence }) =>
+    blockNotePersistence.changeFromBytes(changeFrame),
+  ),
+];
+
+for (const { blockNotePersistence } of persistenceModules) {
+  for (const value of values.slice(0, persistenceModules.length)) {
+    if (
+      Buffer.compare(
+        blockNotePersistence.checkpointToBytes(value),
+        checkpointFrame,
+      ) !== 0
+    ) {
+      throw new Error("Packed persistence checkpoint did not cross runtimes");
+    }
+  }
+  for (const value of values.slice(persistenceModules.length)) {
+    if (
+      Buffer.compare(blockNotePersistence.changeToBytes(value), changeFrame) !==
+      0
+    ) {
+      throw new Error("Packed persistence change did not cross runtimes");
+    }
+  }
+}
+
+const errorClasses = persistenceModules
+  .map(({ BlockNoteError }) => BlockNoteError)
+  .filter(Boolean);
+if (
+  errorClasses.length !== persistenceModules.length ||
+  errorClasses.some(
+    (ErrorClass) =>
+      ErrorClass !== errorClasses[0] || ErrorClass.name !== "BlockNoteError",
+  )
+) {
+  throw new Error("Packed persistence error constructors diverged");
+}
+const failures = persistenceModules.map(({ blockNotePersistence }) => {
+  try {
+    blockNotePersistence.checkpointFromBytes(Uint8Array.of(1));
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Packed persistence accepted an invalid frame");
+});
+for (const { isBlockNoteError } of persistenceModules) {
+  if (
+    typeof isBlockNoteError !== "function" ||
+    failures.some((failure) => !isBlockNoteError(failure))
+  ) {
+    throw new Error("Packed persistence error lost its public identity");
+  }
+}
+for (const failure of failures) {
+  for (const ErrorClass of errorClasses) {
+    if (!(failure instanceof ErrorClass)) {
+      throw new Error("Packed persistence error constructors diverged");
+    }
+  }
+}
+
+const defensiveInput = checkpointFrame.slice();
+const defensiveValue =
+  persistenceModules[0].blockNotePersistence.checkpointFromBytes(
+    defensiveInput,
+  );
+defensiveInput.fill(0);
+const defensiveOutput =
+  persistenceModules[1].blockNotePersistence.checkpointToBytes(defensiveValue);
+defensiveOutput.fill(0);
+if (
+  Buffer.compare(
+    persistenceModules[2].blockNotePersistence.checkpointToBytes(
+      defensiveValue,
+    ),
+    checkpointFrame,
+  ) !== 0
+) {
+  throw new Error("Packed persistence bytes were not copied defensively");
 }
 
 if ("window" in globalThis || "document" in globalThis) {

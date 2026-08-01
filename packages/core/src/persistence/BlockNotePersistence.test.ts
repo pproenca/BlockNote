@@ -24,6 +24,19 @@ function captureFailure(action: () => void) {
   return failure;
 }
 
+function inOtherRealm<T>(expression: string) {
+  const iframe = document.createElement("iframe");
+  document.body.append(iframe);
+  try {
+    const otherGlobal = iframe.contentWindow as unknown as {
+      eval(source: string): unknown;
+    };
+    return otherGlobal.eval(expression) as T;
+  } finally {
+    iframe.remove();
+  }
+}
+
 function expectFailure(
   action: () => void,
   code: "document-too-large" | "incompatible-document" | "invalid-document",
@@ -280,6 +293,49 @@ describe("blockNotePersistence", () => {
           kind: "blocknote-checkpoint",
           byteLength: 9,
         } as BlockNoteCheckpoint),
+      "invalid-document",
+    );
+  });
+
+  it("accepts genuine cross-realm Uint8Array values only", () => {
+    const checkpointFrame = inOtherRealm<Uint8Array>(
+      "Uint8Array.from([66, 78, 1, 1, 0, 0, 0, 0])",
+    );
+    const payload = inOtherRealm<Uint8Array>("Uint8Array.from([1, 2, 3])");
+
+    const checkpoint =
+      blockNotePersistence.checkpointFromBytes(checkpointFrame);
+    const change = blockNotePersistenceInternals.changeFromPayload(payload);
+
+    expect(blockNotePersistence.checkpointToBytes(checkpoint)).toEqual(
+      Uint8Array.from([66, 78, 1, 1, 0, 0, 0, 0]),
+    );
+    expect(blockNotePersistenceInternals.changeToPayload(change)).toEqual(
+      Uint8Array.from([1, 2, 3]),
+    );
+    expectFailure(
+      () =>
+        blockNotePersistence.checkpointFromBytes(
+          inOtherRealm<Uint8Array>("new Int8Array(8)"),
+        ),
+      "invalid-document",
+    );
+    expectFailure(
+      () =>
+        blockNotePersistence.checkpointFromBytes(
+          inOtherRealm<Uint8Array>("new DataView(new ArrayBuffer(8))"),
+        ),
+      "invalid-document",
+    );
+    const spoofed = new Int8Array(8);
+    Object.defineProperty(spoofed, Symbol.toStringTag, {
+      value: "Uint8Array",
+    });
+    expectFailure(
+      () =>
+        blockNotePersistence.checkpointFromBytes(
+          spoofed as unknown as Uint8Array,
+        ),
       "invalid-document",
     );
   });

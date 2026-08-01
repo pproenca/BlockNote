@@ -10,6 +10,7 @@ describe("BlockNoteError", () => {
     });
 
     expect(error).toBeInstanceOf(Error);
+    expect(BlockNoteError.name).toBe("BlockNoteError");
     expect(error.name).toBe("BlockNoteError");
     expect(error.code).toBe("document-conflict");
     expect(error.retryable).toBe(true);
@@ -30,5 +31,33 @@ describe("BlockNoteError", () => {
         retryable: true,
       }),
     ).toBe(false);
+  });
+
+  it("returns false for hostile and revoked proxies", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("hostile prototype");
+        },
+        get() {
+          throw new Error("hostile property");
+        },
+      },
+    );
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+
+    expect(() => isBlockNoteError(hostile)).not.toThrow();
+    expect(isBlockNoteError(hostile)).toBe(false);
+    expect(() => isBlockNoteError(revoked.proxy)).not.toThrow();
+    expect(isBlockNoteError(revoked.proxy)).toBe(false);
+  });
+
+  it("rejects branded errors mutated beyond the current code union", () => {
+    const error = new BlockNoteError("document-conflict", "Try again");
+    Object.defineProperty(error, "code", { value: "future-error-code" });
+
+    expect(isBlockNoteError(error)).toBe(false);
   });
 });
