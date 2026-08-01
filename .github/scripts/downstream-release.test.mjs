@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  createDownstreamConsumer,
   downstreamPackages,
   getPackedArtifactIntegrity,
   parseDownstreamReleaseTag,
@@ -132,5 +133,52 @@ await test("computes registry-compatible artifact integrity", async () => {
   assert.equal(
     await getPackedArtifactIntegrity(file),
     "sha512-EoxPQvCnCVJLtPTEUzi9LaOzt3M9JXtm1b+P0oijnMYwaQHm43eymAzaZNyCQ8csYNEBryxaopG+duqfLlrDTQ==",
+  );
+});
+
+await test("creates one hermetic Product-style downstream consumer", async () => {
+  const root = await createPackageTree();
+  const artifactDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "blocknote-downstream-artifacts-"),
+  );
+  const consumerDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "blocknote-downstream-consumer-"),
+  );
+
+  await prepareDownstreamManifests({ root, release });
+
+  for (const packageDefinition of downstreamPackages) {
+    const name = `${packageDefinition.downstreamName
+      .slice(1)
+      .replace("/", "-")}-${release.downstreamVersion}.tgz`;
+    await writeFile(path.join(artifactDirectory, name), "test");
+  }
+
+  await createDownstreamConsumer({
+    root,
+    artifactDirectory,
+    consumerDirectory,
+    release,
+  });
+
+  const manifest = JSON.parse(
+    await readFile(path.join(consumerDirectory, "package.json"), "utf8"),
+  );
+
+  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
+    "@blocknote/collaboration",
+    "@blocknote/collaboration-server",
+    "@blocknote/core",
+    "@blocknote/react",
+    "@blocknote/server-util",
+    "@blocknote/test-utils",
+  ]);
+  assert.match(
+    manifest.dependencies["@blocknote/core"],
+    /pproenca-blocknote-core-0\.52\.1-pf\.7\.tgz$/,
+  );
+  assert.equal(
+    manifest.pnpm.overrides["@blocknote/core"],
+    manifest.dependencies["@blocknote/core"],
   );
 });
