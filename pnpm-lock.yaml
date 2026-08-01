@@ -5128,9 +5128,6 @@ importers:
 
   packages/react:
     dependencies:
-      '@blocknote/core':
-        specifier: workspace:^
-        version: link:../core
       '@emoji-mart/data':
         specifier: ^1.2.1
         version: 1.2.1
@@ -5159,6 +5156,9 @@ importers:
         specifier: 1.6.0
         version: 1.6.0(react@19.2.5)
     devDependencies:
+      '@blocknote/core':
+        specifier: workspace:^
+        version: link:../core
       '@types/lodash.foreach':
         specifier: ^4.5.9
         version: 4.5.9
@@ -5205,12 +5205,6 @@ importers:
 
   packages/server-util:
     dependencies:
-      '@blocknote/core':
-        specifier: workspace:^
-        version: link:../core
-      '@blocknote/react':
-        specifier: workspace:^
-        version: link:../react
       '@tiptap/pm':
         specifier: ^3.0.0
         version: 3.22.4
@@ -5221,6 +5215,12 @@ importers:
         specifier: ^13.6.27
         version: 13.6.30
     devDependencies:
+      '@blocknote/core':
+        specifier: workspace:^
+        version: link:../core
+      '@blocknote/react':
+        specifier: workspace:^
+        version: link:../react
       '@types/jsdom':
         specifier: ^21.1.7
         version: 21.1.7
@@ -27212,7 +27212,7 @@ snapshots:
       picomatch: 4.0.4
       std-env: 4.0.0
       tinybench: 2.9.0
-      tinyexec: 1.0.4
+      tinyexec: 1.2.4
       tinyglobby: 0.2.16
       tinyrainbow: 3.1.0
       vite: 8.0.8(@types/node@20.19.37)(esbuild@0.27.5)(jiti@2.6.1)(terser@5.46.2)(tsx@4.21.0)(yaml@2.9.0)
@@ -27242,7 +27242,7 @@ snapshots:
       picomatch: 4.0.4
       std-env: 4.0.0
       tinybench: 2.9.0
-      tinyexec: 1.0.4
+      tinyexec: 1.2.4
       tinyglobby: 0.2.16
       tinyrainbow: 3.1.0
       vite: 8.0.8(@types/node@25.5.0)(esbuild@0.27.5)(jiti@2.6.1)(terser@5.46.2)(tsx@4.21.0)(yaml@2.9.0)
