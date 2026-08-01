@@ -108,6 +108,35 @@ describe("ExtensionManager de-duplication by key", () => {
 });
 
 describe("ExtensionManager ordering", () => {
+  it("runs semantic dependencies before their dependents", () => {
+    const dependencyKey = new PluginKey("semantic-dependency");
+    const dependentKey = new PluginKey("semantic-dependent");
+    const dependency = createExtension(
+      () => ({
+        key: "semantic-dependency-runtime",
+        prosemirrorPlugins: [new Plugin({ key: dependencyKey })],
+      }),
+      { name: "semantic-dependency", version: "1" },
+    );
+    const dependent = createExtension(
+      () => ({
+        key: "semantic-dependent-runtime",
+        prosemirrorPlugins: [new Plugin({ key: dependentKey })],
+      }),
+      {
+        name: "semantic-dependent",
+        version: "1",
+        dependencies: ["semantic-dependency"] as const,
+      },
+    );
+
+    const editor = createMountedEditor([dependency(), dependent()]);
+
+    expect(pluginIndex(editor, dependencyKey)).toBeLessThan(
+      pluginIndex(editor, dependentKey),
+    );
+  });
+
   it("orders an extension before another it declares in runsBefore", () => {
     const firstKey = new PluginKey("rb-first");
     const secondKey = new PluginKey("rb-second");

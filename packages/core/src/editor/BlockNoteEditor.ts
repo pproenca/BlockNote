@@ -17,6 +17,10 @@ import {
   DefaultStyleSchema,
   PartialBlock,
 } from "../blocks/index.js";
+import type {
+  AnyBlockNoteDocumentDefinition,
+  BlockNoteRuntimeContext,
+} from "../document/BlockNoteDocument.js";
 import {
   BlockChangeExtension,
   DropCursorOptions,
@@ -41,7 +45,8 @@ import "../style.css";
 import { mergeCSSClasses } from "../util/browser.js";
 import { EventEmitter } from "../util/EventEmitter.js";
 import type { NoInfer } from "../util/typescript.js";
-import { ExtensionFactoryInstance } from "./BlockNoteExtension.js";
+import type { AnyBlockNoteDocumentExtension } from "../document/BlockNoteDocumentExtension.js";
+import type { ExtensionFactoryInstance } from "./BlockNoteExtension.js";
 import type { TextCursorPosition } from "./cursorPositionTypes.js";
 import {
   BlockManager,
@@ -325,14 +330,73 @@ export interface BlockNoteEditorOptions<
   _tiptapOptions?: Partial<EditorOptions>;
 
   /**
+   * Application-supplied BlockNote values required by configured extensions.
+   */
+  context?: object;
+
+  /**
    * Register extensions to the editor.
    *
    * See [Extensions](/docs/features/extensions) for more info.
    *
    * @remarks `ExtensionFactory[]`
    */
-  extensions?: Array<ExtensionFactoryInstance>;
+  extensions?: ReadonlyArray<
+    ExtensionFactoryInstance | AnyBlockNoteDocumentExtension
+  >;
 }
+
+type DocumentSchema<Document extends AnyBlockNoteDocumentDefinition> =
+  Document["schema"] extends CustomBlockNoteSchema<
+    infer BSchema,
+    infer ISchema,
+    infer SSchema
+  >
+    ? {
+        block: BSchema;
+        inlineContent: ISchema;
+        style: SSchema;
+      }
+    : never;
+
+type DocumentContextOption<Document extends AnyBlockNoteDocumentDefinition> =
+  keyof BlockNoteRuntimeContext<Document> extends never
+    ? { readonly context?: BlockNoteRuntimeContext<Document> }
+    : { readonly context: BlockNoteRuntimeContext<Document> };
+
+export type BlockNoteEditorOptionsForDocument<
+  Document extends AnyBlockNoteDocumentDefinition,
+> = Omit<
+  Partial<
+    BlockNoteEditorOptions<
+      DocumentSchema<Document>["block"],
+      DocumentSchema<Document>["inlineContent"],
+      DocumentSchema<Document>["style"]
+    >
+  >,
+  "schema" | "extensions" | "context"
+> &
+  DocumentContextOption<Document> & {
+    readonly document: Document;
+  };
+
+export type BlockNoteEditorFor<
+  Document extends AnyBlockNoteDocumentDefinition,
+> = BlockNoteEditor<
+  DocumentSchema<Document>["block"],
+  DocumentSchema<Document>["inlineContent"],
+  DocumentSchema<Document>["style"]
+> & {
+  readonly documentDefinition: Document;
+};
+
+type BlockNoteEditorRuntimeOptions<
+  BSchema extends BlockSchema,
+  ISchema extends InlineContentSchema,
+  SSchema extends StyleSchema,
+> = Partial<BlockNoteEditorOptions<BSchema, ISchema, SSchema>> & {
+  readonly document?: AnyBlockNoteDocumentDefinition;
+};
 
 const blockNoteTipTapOptions = {
   enableInputRules: true,
@@ -380,6 +444,8 @@ export class BlockNoteEditor<
    */
   public readonly schema: BlockNoteSchema<BSchema, ISchema, SSchema>;
 
+  public readonly documentDefinition?: AnyBlockNoteDocumentDefinition;
+
   public readonly blockImplementations: BlockSpecs;
   public readonly inlineContentImplementations: InlineContentSpecs;
   public readonly styleImplementations: StyleSpecs;
@@ -412,10 +478,13 @@ export class BlockNoteEditor<
       headers: boolean;
     };
   };
+  public static create<const Document extends AnyBlockNoteDocumentDefinition>(
+    options: BlockNoteEditorOptionsForDocument<Document>,
+  ): BlockNoteEditorFor<Document>;
   public static create<
     Options extends Partial<BlockNoteEditorOptions<any, any, any>> | undefined,
   >(
-    options?: Options,
+    options?: Options extends { readonly document: unknown } ? never : Options,
   ): Options extends {
     schema: CustomBlockNoteSchema<infer BSchema, infer ISchema, infer SSchema>;
   }
@@ -424,17 +493,23 @@ export class BlockNoteEditor<
         DefaultBlockSchema,
         DefaultInlineContentSchema,
         DefaultStyleSchema
-      > {
+      >;
+  public static create(
+    options: BlockNoteEditorRuntimeOptions<any, any, any> = {},
+  ): BlockNoteEditor<any, any, any> {
     return new BlockNoteEditor(options ?? {}) as any;
   }
 
   protected constructor(
-    protected readonly options: Partial<
-      BlockNoteEditorOptions<BSchema, ISchema, SSchema>
+    protected readonly options: BlockNoteEditorRuntimeOptions<
+      BSchema,
+      ISchema,
+      SSchema
     >,
   ) {
     super();
 
+    this.documentDefinition = options.document;
     this.dictionary = options.dictionary || en;
     this.settings = {
       tables: {
@@ -448,14 +523,16 @@ export class BlockNoteEditor<
     // apply defaults
     const newOptions = {
       defaultStyles: true,
+      ...options,
       schema:
+        options.document?.schema ||
         options.schema ||
         (BlockNoteSchema.create() as unknown as CustomBlockNoteSchema<
           BSchema,
           ISchema,
           SSchema
         >),
-      ...options,
+      extensions: options.document?.extensions ?? options.extensions,
       placeholders: {
         ...this.dictionary.placeholders,
         ...options.placeholders,
@@ -560,6 +637,11 @@ export class BlockNoteEditor<
       }) as any;
       this.pmSchema = this._tiptapEditor.schema;
     } catch (e) {
+      try {
+        this._extensionManager.destroy();
+      } catch {
+        // Preserve the document initialization failure.
+      }
       throw new Error(
         "Error creating document from blocks passed as `initialContent`",
         { cause: e },
@@ -594,6 +676,8 @@ export class BlockNoteEditor<
   private readonly _selectionManager: SelectionManager<any, any, any>;
   private readonly _stateManager: StateManager;
   private readonly _styleManager: StyleManager<any, any, any>;
+
+  private destroyed = false;
 
   /**
    * BlockNote extensions that are added to the editor, keyed by the extension key
@@ -710,6 +794,10 @@ export class BlockNoteEditor<
     element: HTMLElement,
     options?: { portalTarget?: HTMLElement | null },
   ) => {
+    if (this.destroyed) {
+      throw new Error("Cannot mount a destroyed BlockNote editor.");
+    }
+
     const root = element.getRootNode();
     const isInShadowRoot =
       typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot;
@@ -725,8 +813,41 @@ export class BlockNoteEditor<
    * Unmount the editor from the DOM element it is bound to
    */
   public unmount = () => {
+    if (this.destroyed) {
+      return;
+    }
+
     this.portalElement?.remove();
     this._tiptapEditor.unmount();
+  };
+
+  /**
+   * Permanently disposes the editor and every extension it owns.
+   */
+  public destroy = () => {
+    if (this.destroyed) {
+      return;
+    }
+
+    this.destroyed = true;
+    let failure: unknown;
+
+    try {
+      this._extensionManager.destroy();
+    } catch (error) {
+      failure = error;
+    }
+
+    this._portalElement?.remove();
+    try {
+      this._tiptapEditor.destroy();
+    } catch (error) {
+      failure ??= error;
+    }
+
+    if (failure) {
+      throw failure;
+    }
   };
 
   /**

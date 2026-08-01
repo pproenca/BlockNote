@@ -1,4 +1,4 @@
-import { expect, it } from "vite-plus/test";
+import { expect, expectTypeOf, it } from "vite-plus/test";
 import { createExtension, ExtensionOptions } from "./BlockNoteExtension.js";
 import { BlockNoteEditor } from "./BlockNoteEditor.js";
 
@@ -100,4 +100,35 @@ it("allows arbitrary properties on an extension with options", () => {
   extInstance.arbitraryMethod(90);
   // @ts-expect-error - this property is not defined
   extInstance.nonExistentProperty = "newArbitraryValue";
+});
+
+it("creates immutable semantic extension configuration", () => {
+  const SemanticExtension = createExtension(
+    ({ options }: ExtensionOptions<{ label: string }>) => ({
+      key: "semantic",
+      label: options.label,
+    }),
+    {
+      name: "semantic",
+      version: "1",
+      dependencies: ["dependency"] as const,
+    },
+  );
+  const options = { label: "configured" };
+  const configured = SemanticExtension(options);
+  options.label = "mutated";
+
+  expectTypeOf(configured.name).toEqualTypeOf<"semantic">();
+  expectTypeOf(configured.dependencies).toEqualTypeOf<
+    readonly ["dependency"]
+  >();
+  expect(configured.options).toEqual({ label: "configured" });
+  expect(Object.isFrozen(configured.options)).toBe(true);
+  expect(Object.isFrozen(configured.dependencies)).toBe(true);
+
+  const checkOpaqueConfiguration = () => {
+    // @ts-expect-error BlockNote owns instantiation of semantic extensions
+    configured({ editor });
+  };
+  expectTypeOf(checkOpaqueConfiguration).toBeFunction();
 });
