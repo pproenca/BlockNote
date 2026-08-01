@@ -355,11 +355,19 @@ export async function createDownstreamConsumer({
           private: true,
           type: "module",
           dependencies,
-          pnpm: { overrides },
         },
         null,
         2,
       )}\n`,
+    ),
+    writeFile(
+      path.join(consumerDirectory, "pnpm-workspace.yaml"),
+      `packages: []\noverrides:\n${Object.entries(overrides)
+        .map(
+          ([name, value]) =>
+            `  ${JSON.stringify(name)}: ${JSON.stringify(value)}`,
+        )
+        .join("\n")}\n`,
     ),
     writeFile(
       path.join(consumerDirectory, "runtime.mjs"),
