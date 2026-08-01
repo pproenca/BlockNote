@@ -1,9 +1,9 @@
 import { BlockNoteError } from "../platform/BlockNoteError.js";
 import {
-  decodeBlockNotePersistenceFrame,
   type BlockNotePersistenceFrameKind,
+  throwBlockNotePersistenceFrameFailure,
 } from "./BlockNotePersistenceFrame.js";
-import { blockNotePersistenceRuntime } from "./BlockNotePersistenceRuntime.js";
+import { blockNoteRuntime } from "../runtime/BlockNoteRuntime.js";
 
 declare const blockNoteOpaque: unique symbol;
 
@@ -36,38 +36,19 @@ interface BlockNotePersistence {
 }
 
 type BlockNotePersistenceValue = BlockNoteCheckpoint | BlockNoteChange;
+type StoredFrameKind = Exclude<BlockNotePersistenceFrameKind, "bootstrap">;
 
-interface StoredFrame {
-  readonly kind: BlockNotePersistenceFrameKind;
-  readonly bytes: Uint8Array;
-}
-
-const storedFrames = blockNotePersistenceRuntime.storedFrames as WeakMap<
-  BlockNotePersistenceValue,
-  StoredFrame
->;
-
-function createCheckpoint(frame: Uint8Array) {
-  const value = Object.freeze({
-    kind: "blocknote-checkpoint" as const,
-    byteLength: frame.byteLength,
-  }) as BlockNoteCheckpoint;
-  storedFrames.set(value, { kind: "checkpoint", bytes: frame });
-  return value;
-}
-
-function createChange(frame: Uint8Array) {
-  const value = Object.freeze({
-    kind: "blocknote-change" as const,
-    byteLength: frame.byteLength,
-  }) as BlockNoteChange;
-  storedFrames.set(value, { kind: "change", bytes: frame });
-  return value;
+function createValue(frame: Uint8Array, kind: StoredFrameKind) {
+  const created = blockNoteRuntime.createPersistenceValue(kind, frame);
+  if (created.status === "rejected") {
+    throwBlockNotePersistenceFrameFailure(created.failure);
+  }
+  return created.value as BlockNotePersistenceValue;
 }
 
 function valueToBytes(
   value: BlockNotePersistenceValue,
-  expectedKind: BlockNotePersistenceFrameKind,
+  expectedKind: StoredFrameKind,
 ) {
   if ((typeof value !== "object" && typeof value !== "function") || !value) {
     throw new BlockNoteError(
@@ -76,21 +57,20 @@ function valueToBytes(
     );
   }
 
-  const stored = storedFrames.get(value);
-  if (!stored) {
+  const stored = blockNoteRuntime.readPersistenceValue(value, expectedKind);
+  if (stored.status === "invalid") {
     throw new BlockNoteError(
       "invalid-document",
       "BlockNote persistence value is invalid.",
     );
   }
-  if (stored.kind !== expectedKind) {
+  if (stored.status === "wrong-kind") {
     throw new BlockNoteError(
       "invalid-document",
       "BlockNote persistence value has the wrong kind.",
     );
   }
-
-  return new Uint8Array(stored.bytes);
+  return stored.bytes;
 }
 
 export const blockNotePersistence: BlockNotePersistence = Object.freeze({
@@ -98,14 +78,12 @@ export const blockNotePersistence: BlockNotePersistence = Object.freeze({
     return valueToBytes(value, "checkpoint");
   },
   checkpointFromBytes(value: Uint8Array) {
-    const { frame } = decodeBlockNotePersistenceFrame(value, "checkpoint");
-    return createCheckpoint(frame);
+    return createValue(value, "checkpoint") as BlockNoteCheckpoint;
   },
   changeToBytes(value: BlockNoteChange) {
     return valueToBytes(value, "change");
   },
   changeFromBytes(value: Uint8Array) {
-    const { frame } = decodeBlockNotePersistenceFrame(value, "change");
-    return createChange(frame);
+    return createValue(value, "change") as BlockNoteChange;
   },
 });

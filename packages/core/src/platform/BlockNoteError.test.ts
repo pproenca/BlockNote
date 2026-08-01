@@ -31,6 +31,16 @@ describe("BlockNoteError", () => {
         retryable: true,
       }),
     ).toBe(false);
+
+    const prototypeForgery = Object.assign(
+      Object.create(BlockNoteError.prototype) as Error,
+      {
+        code: "document-conflict",
+        retryable: true,
+      },
+    );
+    expect(prototypeForgery).toBeInstanceOf(BlockNoteError);
+    expect(isBlockNoteError(prototypeForgery)).toBe(false);
   });
 
   it("returns false for hostile and revoked proxies", () => {

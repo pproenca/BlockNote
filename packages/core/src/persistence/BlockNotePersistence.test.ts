@@ -339,6 +339,21 @@ describe("blockNotePersistence", () => {
       "invalid-document",
     );
   });
+
+  it("rejects shared-memory views before copying", () => {
+    const sharedFrame = new Uint8Array(new SharedArrayBuffer(8));
+    sharedFrame.set([66, 78, 1, 1, 0, 0, 0, 0]);
+    const sharedPayload = new Uint8Array(new SharedArrayBuffer(3));
+
+    expectFailure(
+      () => blockNotePersistence.checkpointFromBytes(sharedFrame),
+      "invalid-document",
+    );
+    expectFailure(
+      () => blockNotePersistenceInternals.changeFromPayload(sharedPayload),
+      "invalid-document",
+    );
+  });
 });
 
 describe("BlockNoteBootstrap", () => {
