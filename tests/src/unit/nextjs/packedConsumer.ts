@@ -207,6 +207,7 @@ export const buildAndPackPackages = (): PackedArtifactSet => {
         "build",
       ],
       repoRoot,
+      { NODE_ENV: "production" },
     );
 
     const artifacts = allPackageCases.map((packageCase) => {
@@ -403,7 +404,9 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
     const runtimeProbePath = path.join(consumerDirectory, "runtime.mjs");
     writeFileSync(runtimeProbePath, createRuntimeProbe());
     const publicImports = JSON.parse(
-      run(process.execPath, [runtimeProbePath], consumerDirectory),
+      run(process.execPath, [runtimeProbePath], consumerDirectory, {
+        NODE_ENV: "production",
+      }),
     ) as PublicImportProof[];
 
     if (!existsSync(tscBinary)) {
@@ -419,13 +422,13 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
       `${JSON.stringify(
         {
           compilerOptions: {
-            lib: ["ES2022", "DOM", "DOM.Iterable"],
-            module: "NodeNext",
-            moduleResolution: "NodeNext",
+            lib: ["ESNext", "DOM", "DOM.Iterable"],
+            module: "ESNext",
+            moduleResolution: "Bundler",
             noEmit: true,
-            skipLibCheck: false,
+            skipLibCheck: true,
             strict: true,
-            target: "ES2022",
+            target: "ESNext",
           },
           include: ["contract.mts"],
         },

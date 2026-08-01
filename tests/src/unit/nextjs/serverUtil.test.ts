@@ -255,7 +255,7 @@ describe(`server-util in a fresh Next.js App Router consumer (#942) [${mode}]`, 
       );
     }
 
-    expect(response.status).toBe(200);
+    expect(response.status, JSON.stringify(body.results, null, 2)).toBe(200);
     expect(body.allPassed, JSON.stringify(body.results, null, 2)).toBe(true);
     expect(body.results.simpleReactBlock).toMatch(/^PASS:/);
     expect(body.results.reactContextBlock).toMatch(/^PASS:/);
