@@ -2,6 +2,7 @@ import type { ExtensionFactoryInstance } from "../../../editor/BlockNoteExtensio
 import type { CollaborationOptions } from "../index.js";
 import { SuggestionsExtension } from "../Suggestions.js";
 import { registerNativeSuggestionsBinding } from "./native.js";
+import { uuidv4 } from "lib0/random";
 
 export function createSuggestionsRuntimeExtension(
   options: CollaborationOptions,
@@ -16,6 +17,7 @@ export function createSuggestionsRuntimeExtension(
       fragment: options.fragment,
       suggestionDoc: options.suggestionDoc,
       renderer: options.renderer,
+      creatorId: uuidv4(),
       getActorId: () => options.user.id ?? null,
     });
     return configured({ editor, context });

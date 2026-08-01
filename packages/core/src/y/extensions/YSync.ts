@@ -6,6 +6,13 @@ import {
 import { blockMatchNodes } from "./blockMatchNodes.js";
 import { CollaborationOptions } from "./index.js";
 
+function roleMark(userIds: readonly string[]) {
+  return {
+    userIds,
+    blocknoteSuggestionId: null,
+  };
+}
+
 /**
  * Maps a Y attribution to BlockNote's `y-attributed-*` mark attrs.
  *
@@ -37,17 +44,11 @@ export const mapAttributionToMark = (
   const out: Record<string, unknown> = { ...format };
 
   if (attribution.insert) {
-    out["y-attributed-insert"] = {
-      userIds: attribution.insert,
-      blocknoteSuggestionId: attribution.blocknoteSuggestionId ?? null,
-    };
+    out["y-attributed-insert"] = roleMark(attribution.insert);
   }
 
   if (attribution.delete) {
-    out["y-attributed-delete"] = {
-      userIds: attribution.delete,
-      blocknoteSuggestionId: attribution.blocknoteSuggestionId ?? null,
-    };
+    out["y-attributed-delete"] = roleMark(attribution.delete);
   }
 
   if (attribution.format) {
@@ -55,7 +56,7 @@ export const mapAttributionToMark = (
     out["y-attributed-format"] = {
       userIds,
       format: attribution.format,
-      blocknoteSuggestionId: attribution.blocknoteSuggestionId ?? null,
+      blocknoteSuggestionId: null,
     };
   }
 

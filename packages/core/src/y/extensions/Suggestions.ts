@@ -1,8 +1,4 @@
-import {
-  acceptAllChanges,
-  configureYProsemirror,
-  rejectAllChanges,
-} from "@y/prosemirror";
+import { configureYProsemirror, ySyncPluginKey } from "@y/prosemirror";
 import { Plugin, TextSelection } from "prosemirror-state";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
@@ -20,18 +16,13 @@ import {
   type BlockNoteStore,
 } from "../../platform/BlockNoteStore.js";
 import { findTypeInOtherYdoc } from "../utils.js";
+import { findSuggestionRanges } from "./suggestions/analysis.js";
 import {
-  analyzeSuggestions,
-  type AnalyzedSuggestion,
-} from "./suggestions/analysis.js";
-import {
-  acceptNativeSuggestion,
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
   observeNativeSuggestions,
-  rejectNativeSuggestion,
   resolveNativeSuggestions,
-  updateNativeSuggestionProjections,
+  type NativeSuggestionRecord,
   type NativeSuggestionsBinding,
 } from "./suggestions/native.js";
 
@@ -80,7 +71,9 @@ function equalSuggestions(
   );
 }
 
-function publicSuggestion(suggestion: AnalyzedSuggestion): BlockNoteSuggestion {
+function publicSuggestion(
+  suggestion: NativeSuggestionRecord,
+): BlockNoteSuggestion {
   return Object.freeze({
     id: suggestion.id,
     authorId: suggestion.authorId,
@@ -88,6 +81,10 @@ function publicSuggestion(suggestion: AnalyzedSuggestion): BlockNoteSuggestion {
     preview: suggestion.preview,
     status: suggestion.status,
   });
+}
+
+function compareCodeUnits(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 const createSuggestionsExtension = ({
@@ -98,7 +95,7 @@ const createSuggestionsExtension = ({
   });
   let binding: NativeSuggestionsBinding | undefined;
   let stopObserving: (() => void) | undefined;
-  let active = new Map<string, AnalyzedSuggestion>();
+  let active = new Map<string, NativeSuggestionRecord>();
   let latestDoc: ProseMirrorNode | undefined;
   let refreshing = false;
   let refreshRequested = false;
@@ -110,38 +107,14 @@ const createSuggestionsExtension = ({
       return;
     }
     const records = getNativeSuggestionRecords(binding);
-    active = analyzeSuggestions(doc, records);
-    const projections = new Map<
-      string,
-      Pick<AnalyzedSuggestion, "kind" | "preview">
-    >();
-    for (const suggestion of active.values()) {
-      projections.set(suggestion.id, {
-        kind: suggestion.kind,
-        preview: suggestion.preview,
-      });
-    }
-    updateNativeSuggestionProjections(binding, projections);
-    const pending = [...active.values()]
+    active = new Map(records);
+    const suggestions = [...active.values()]
       .sort(
         (left, right) =>
-          left.order - right.order || left.id.localeCompare(right.id),
+          compareCodeUnits(left.order, right.order) ||
+          compareCodeUnits(left.id, right.id),
       )
       .map(publicSuggestion);
-    const terminal = [...records.values()]
-      .filter((record) => record.status !== "pending")
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map(
-        (record): BlockNoteSuggestion =>
-          Object.freeze({
-            id: record.id,
-            authorId: record.authorId,
-            kind: record.kind,
-            preview: record.preview,
-            status: record.status,
-          }),
-      );
-    const suggestions = [...pending, ...terminal];
     store.set(Object.freeze(suggestions));
   };
 
@@ -187,15 +160,6 @@ const createSuggestionsExtension = ({
     if (!binding || !suggestion) {
       return;
     }
-    const record = getNativeSuggestionRecords(binding).get(id);
-    if (!record || record.status !== "pending") {
-      return;
-    }
-    if (status === "accepted") {
-      acceptNativeSuggestion(binding, record);
-    } else {
-      rejectNativeSuggestion(binding, record);
-    }
     resolveNativeSuggestions(binding, [id], status);
     refresh();
   };
@@ -204,13 +168,15 @@ const createSuggestionsExtension = ({
     ensureBinding();
     latestDoc = editor.prosemirrorState.doc;
     refresh(latestDoc);
-    if (!binding || active.size === 0) {
+    if (!binding) {
       return;
     }
-    const ids = [...active.keys()];
-    editor.exec(
-      status === "accepted" ? acceptAllChanges() : rejectAllChanges(),
-    );
+    const ids = [...active.values()]
+      .filter((record) => record.status === "pending")
+      .map((record) => record.id);
+    if (ids.length === 0) {
+      return;
+    }
     resolveNativeSuggestions(binding, ids, status);
     refresh();
   };
@@ -243,8 +209,22 @@ const createSuggestionsExtension = ({
         return;
       }
       const suggestion = currentSuggestion(id);
-      const first = suggestion?.ranges[0];
-      const last = suggestion?.ranges.at(-1);
+      const suggestionType = binding
+        ? findTypeInOtherYdoc(binding.fragment, binding.suggestionDoc)
+        : null;
+      const sync = ySyncPluginKey.getState(editor.prosemirrorState);
+      if (
+        !binding ||
+        sync?.ytype !== suggestionType ||
+        sync.renderer !== binding.renderer
+      ) {
+        return;
+      }
+      const ranges = suggestion
+        ? findSuggestionRanges(editor.prosemirrorState.doc, binding, suggestion)
+        : [];
+      const first = ranges[0];
+      const last = ranges.at(-1);
       if (!first || !last) {
         return;
       }
