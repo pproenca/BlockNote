@@ -2,6 +2,7 @@ export const blockNoteErrorCodes = [
   "access-denied",
   "document-conflict",
   "document-too-large",
+  "extension-cleanup-failed",
   "invalid-document",
   "invalid-anchor",
   "incompatible-document",

@@ -92,6 +92,95 @@ describe("BlockNoteEditor lifecycle", () => {
     ).toThrowError("Error creating document from blocks");
     expect(destroy).toHaveBeenCalledOnce();
   });
+
+  it("cleans up extensions when final ordering fails", () => {
+    const destroyDependency = vi.fn();
+    const destroyDependent = vi.fn();
+    const Dependency = createExtension(
+      () => ({ key: "ordering-dependency", destroy: destroyDependency }),
+      { name: "ordering-dependency", version: "1" },
+    );
+    const Dependent = createExtension(
+      () => ({
+        key: "ordering-dependent",
+        runsBefore: ["ordering-dependency"],
+        destroy: destroyDependent,
+      }),
+      {
+        name: "ordering-dependent",
+        version: "1",
+        dependencies: ["ordering-dependency"] as const,
+      },
+    );
+    const definition = defineBlockNoteDocument({
+      id: "cyclic-runtime-order",
+      version: "1",
+      schema: BlockNoteSchema.create(),
+      extensions: [Dependency(), Dependent()],
+    });
+
+    expect(() => BlockNoteEditor.create({ document: definition })).toThrow();
+    expect(destroyDependency).toHaveBeenCalledOnce();
+    expect(destroyDependent).toHaveBeenCalledOnce();
+  });
+
+  it("cleans up the complete editor when a create listener fails", () => {
+    const failure = new Error("create listener failed");
+    const destroy = vi.fn();
+    let partialEditor: BlockNoteEditor | undefined;
+    const FailingCreateExtension = createExtension(({ editor }) => {
+      partialEditor = editor;
+      editor.on("create", () => {
+        throw failure;
+      });
+      return {
+        key: "failing-create-listener",
+        destroy,
+      };
+    });
+
+    let thrown: unknown;
+    try {
+      BlockNoteEditor.create({ extensions: [FailingCreateExtension()] });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(failure);
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(partialEditor?._tiptapEditor.isDestroyed).toBe(true);
+
+    partialEditor?.destroy();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("cleans up a mount that synchronously unregisters itself", () => {
+    const cleanup = vi.fn();
+    const destroy = vi.fn();
+    let mountedSignal: AbortSignal | undefined;
+    let editor: BlockNoteEditor;
+    const SelfRemovingExtension = createExtension(() => ({
+      key: "self-removing",
+      mount({ signal }) {
+        mountedSignal = signal;
+        editor.unregisterExtension("self-removing");
+        return cleanup;
+      },
+      destroy,
+    }));
+    editor = BlockNoteEditor.create({
+      extensions: [SelfRemovingExtension()],
+    });
+
+    editor.mount(document.createElement("div"));
+
+    expect(mountedSignal?.aborted).toBe(true);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledOnce();
+    editor.destroy();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
 });
 
 describe("semantic BlockNote extensions", () => {

@@ -1,4 +1,5 @@
 import {
+  type AnyExtension as AnyTiptapExtension,
   createDocument,
   EditorOptions,
   FocusPosition,
@@ -566,106 +567,122 @@ export class BlockNoteEditor<
     this._eventManager = new EventManager(this as any);
     this._extensionManager = new ExtensionManager(this, newOptions);
 
-    const tiptapExtensions = this._extensionManager.getTiptapExtensions();
-
-    const tiptapOptions: EditorOptions = {
-      ...blockNoteTipTapOptions,
-      ...newOptions._tiptapOptions,
-      element: null,
-      autofocus: newOptions.autofocus ?? false,
-      extensions: tiptapExtensions,
-      editorProps: {
-        scrollMargin: { top: 72, bottom: 72, left: 0, right: 0 },
-        ...newOptions._tiptapOptions?.editorProps,
-        attributes: {
-          // As of TipTap v2.5.0 the tabIndex is removed when the editor is not
-          // editable, so you can't focus it. We want to revert this as we have
-          // UI behaviour that relies on it.
-          tabIndex: "0",
-          // eslint-disable-next-line @typescript-eslint/no-misused-spread
-          ...newOptions._tiptapOptions?.editorProps?.attributes,
-          ...newOptions.domAttributes?.editor,
-          class: mergeCSSClasses(
-            "bn-editor",
-            newOptions.defaultStyles ? "bn-default-styles" : "",
-            newOptions.domAttributes?.editor?.class || "",
-          ),
-        },
-        transformPasted,
-      },
-    } as any;
-
+    let tiptapEditor: TiptapEditor | undefined;
     try {
-      const initialContent = newOptions.initialContent || [
-        {
-          type: "paragraph",
-          id: UniqueID.options.generateID(),
-        },
-      ];
+      const tiptapExtensions: AnyTiptapExtension[] =
+        this._extensionManager.getTiptapExtensions();
 
-      if (!Array.isArray(initialContent) || initialContent.length === 0) {
+      const tiptapOptions: EditorOptions = {
+        ...blockNoteTipTapOptions,
+        ...newOptions._tiptapOptions,
+        element: null,
+        autofocus: newOptions.autofocus ?? false,
+        extensions: tiptapExtensions,
+        editorProps: {
+          scrollMargin: { top: 72, bottom: 72, left: 0, right: 0 },
+          ...newOptions._tiptapOptions?.editorProps,
+          attributes: {
+            // As of TipTap v2.5.0 the tabIndex is removed when the editor is not
+            // editable, so you can't focus it. We want to revert this as we have
+            // UI behaviour that relies on it.
+            tabIndex: "0",
+            // eslint-disable-next-line @typescript-eslint/no-misused-spread
+            ...newOptions._tiptapOptions?.editorProps?.attributes,
+            ...newOptions.domAttributes?.editor,
+            class: mergeCSSClasses(
+              "bn-editor",
+              newOptions.defaultStyles ? "bn-default-styles" : "",
+              newOptions.domAttributes?.editor?.class || "",
+            ),
+          },
+          transformPasted,
+        },
+      } as any;
+
+      try {
+        const initialContent = newOptions.initialContent || [
+          {
+            type: "paragraph",
+            id: UniqueID.options.generateID(),
+          },
+        ];
+
+        if (!Array.isArray(initialContent) || initialContent.length === 0) {
+          throw new Error(
+            "initialContent must be a non-empty array of blocks, received: " +
+              JSON.stringify(initialContent),
+          );
+        }
+        const schema = getSchema(tiptapOptions.extensions!);
+        // `blockToNode` (via `isPlainContentNodeType`) resolves the block schema
+        // through `schema.cached.blockNoteEditor`, so stamp it on this throwaway
+        // schema now — the real `pmSchema` is stamped separately below.
+        schema.cached.blockNoteEditor = this;
+        const pmNodes = initialContent.map((b) =>
+          blockToNode(b, schema, this.schema.styleSchema).toJSON(),
+        );
+        const doc = createDocument(
+          {
+            type: "doc",
+            content: [
+              {
+                type: "blockGroup",
+                content: pmNodes,
+              },
+            ],
+          },
+          schema,
+          tiptapOptions.parseOptions,
+        );
+
+        tiptapEditor = new TiptapEditor({
+          ...tiptapOptions,
+          content: doc.toJSON(),
+        });
+        this._tiptapEditor = tiptapEditor as typeof this._tiptapEditor;
+        this.pmSchema = this._tiptapEditor.schema;
+      } catch (e) {
         throw new Error(
-          "initialContent must be a non-empty array of blocks, received: " +
-            JSON.stringify(initialContent),
+          "Error creating document from blocks passed as `initialContent`",
+          { cause: e },
         );
       }
-      const schema = getSchema(tiptapOptions.extensions!);
-      // `blockToNode` (via `isPlainContentNodeType`) resolves the block schema
-      // through `schema.cached.blockNoteEditor`, so stamp it on this throwaway
-      // schema now — the real `pmSchema` is stamped separately below.
-      schema.cached.blockNoteEditor = this;
-      const pmNodes = initialContent.map((b) =>
-        blockToNode(b, schema, this.schema.styleSchema).toJSON(),
-      );
-      const doc = createDocument(
-        {
-          type: "doc",
-          content: [
-            {
-              type: "blockGroup",
-              content: pmNodes,
-            },
-          ],
-        },
-        schema,
-        tiptapOptions.parseOptions,
-      );
 
-      this._tiptapEditor = new TiptapEditor({
-        ...tiptapOptions,
-        content: doc.toJSON(),
-      }) as any;
-      this.pmSchema = this._tiptapEditor.schema;
-    } catch (e) {
-      try {
-        this._extensionManager.destroy();
-      } catch {
-        // Preserve the document initialization failure.
+      this.pmSchema.cached.blockNoteEditor = this;
+
+      this._tiptapEditor.on("mount", () => {
+        this.headless = false;
+      });
+      this._tiptapEditor.on("unmount", () => {
+        this.headless = true;
+      });
+
+      // Initialize managers
+      this._blockManager = new BlockManager(this as any);
+
+      this._exportManager = new ExportManager(this as any);
+      this._selectionManager = new SelectionManager(this as any);
+      this._stateManager = new StateManager(this as any);
+      this._styleManager = new StyleManager(this as any);
+
+      this.emit("create");
+    } catch (error) {
+      if (!this.destroyed) {
+        this.destroyed = true;
+        try {
+          this._extensionManager.destroy();
+        } catch {
+          // Preserve the construction failure.
+        }
+        this._portalElement?.remove();
+        try {
+          tiptapEditor?.destroy();
+        } catch {
+          // Preserve the construction failure.
+        }
       }
-      throw new Error(
-        "Error creating document from blocks passed as `initialContent`",
-        { cause: e },
-      );
+      throw error;
     }
-
-    this.pmSchema.cached.blockNoteEditor = this;
-
-    this._tiptapEditor.on("mount", () => {
-      this.headless = false;
-    });
-    this._tiptapEditor.on("unmount", () => {
-      this.headless = true;
-    });
-
-    // Initialize managers
-    this._blockManager = new BlockManager(this as any);
-
-    this._exportManager = new ExportManager(this as any);
-    this._selectionManager = new SelectionManager(this as any);
-    this._stateManager = new StateManager(this as any);
-    this._styleManager = new StyleManager(this as any);
-
-    this.emit("create");
   }
 
   // Manager instances

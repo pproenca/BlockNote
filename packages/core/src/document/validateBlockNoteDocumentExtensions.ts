@@ -85,6 +85,7 @@ export function validateBlockNoteDocumentExtensions(
 
   const state = new Map<string, "visiting" | "visited">();
   const path: string[] = [];
+  const ordered: AnyBlockNoteDocumentExtension[] = [];
 
   const visit = (name: string): void => {
     if (state.get(name) === "visited") {
@@ -106,24 +107,12 @@ export function validateBlockNoteDocumentExtensions(
     }
     path.pop();
     state.set(name, "visited");
+    ordered.push(byName.get(name)!);
   };
 
   for (const extension of extensions) {
     visit(extension.name);
   }
 
-  const positions = new Map(
-    extensions.map((extension, index) => [extension.name, index]),
-  );
-  for (const extension of extensions) {
-    for (const dependency of extension.dependencies) {
-      if (positions.get(dependency)! > positions.get(extension.name)!) {
-        throw configurationError(
-          `BlockNote extension "${dependency}" must appear before dependent extension "${extension.name}".`,
-        );
-      }
-    }
-  }
-
-  return byName;
+  return new Map(ordered.map((extension) => [extension.name, extension]));
 }

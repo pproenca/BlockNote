@@ -9,6 +9,10 @@ export class ExtensionLifecycle {
     this.subscriptions.push(unsubscribe);
   }
 
+  public isDisposed(extension: Extension) {
+    return this.disposed.has(extension);
+  }
+
   public mount(
     extension: Extension,
     context: {
@@ -16,25 +20,29 @@ export class ExtensionLifecycle {
       readonly root: Document | ShadowRoot;
     },
   ) {
-    if (!extension.mount) {
+    if (!extension.mount || this.disposed.has(extension)) {
       return;
     }
 
     this.abort(extension);
     const abortController = new AbortController();
+    this.abortControllers.set(extension, abortController);
     try {
       const cleanup = extension.mount({
         ...context,
         signal: abortController.signal,
       });
       if (cleanup) {
-        abortController.signal.addEventListener("abort", cleanup, {
-          once: true,
-        });
+        if (abortController.signal.aborted) {
+          cleanup();
+        } else {
+          abortController.signal.addEventListener("abort", cleanup, {
+            once: true,
+          });
+        }
       }
-      this.abortControllers.set(extension, abortController);
     } catch (error) {
-      abortController.abort();
+      this.abort(extension);
       throw error;
     }
   }
@@ -97,7 +105,14 @@ export class ExtensionLifecycle {
       }
     }
 
-    this.abortControllers.clear();
+    for (const extension of [...this.abortControllers.keys()]) {
+      try {
+        this.abort(extension);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+
     if (failure) {
       throw failure;
     }

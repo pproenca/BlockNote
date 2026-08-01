@@ -118,7 +118,7 @@ describe("defineBlockNoteDocument", () => {
     ).toThrowError('Duplicate BlockNote extension "access".');
   });
 
-  it("rejects missing and out-of-order dependencies", () => {
+  it("rejects missing dependencies and canonicalizes dependency order", () => {
     expect(() =>
       defineBlockNoteDocument({
         id: "missing",
@@ -130,15 +130,26 @@ describe("defineBlockNoteDocument", () => {
       'BlockNote extension "comments" depends on missing extension "access".',
     );
 
-    expect(() =>
-      defineBlockNoteDocument({
-        id: "order",
-        version: "1",
-        schema,
-        extensions: [CommentsExtension(), AccessExtension()],
-      }),
-    ).toThrowError(
-      'BlockNote extension "access" must appear before dependent extension "comments".',
+    const reversedExtensions = [
+      CommentsExtension(),
+      AccessExtension(),
+    ] as const;
+    const reordered = defineBlockNoteDocument({
+      id: "order",
+      version: "1",
+      schema,
+      extensions: reversedExtensions,
+    });
+
+    expectTypeOf(reordered.extensions).toEqualTypeOf<
+      ReadonlyArray<(typeof reversedExtensions)[number]>
+    >();
+    expect(reordered.extensions.map((extension) => extension.name)).toEqual([
+      "access",
+      "comments",
+    ]);
+    expect(getBlockNoteDocumentInternals(reordered).formatFingerprint).toBe(
+      '["order","1",[["access","1"],["comments","2"]]]',
     );
   });
 

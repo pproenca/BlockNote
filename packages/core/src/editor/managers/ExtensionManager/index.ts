@@ -66,6 +66,15 @@ export class ExtensionManager {
   private initializing = true;
 
   private destroyed = false;
+
+  private replacingExtensions = false;
+
+  private extensionReadSnapshot:
+    | {
+        readonly extensions: readonly Extension[];
+        readonly factories: ReadonlyMap<AnyExtensionFactory, Extension>;
+      }
+    | undefined;
   /**
    * Because a single blocknote extension can both have it's own prosemirror plugins & additional generated ones (e.g. keymap & input rules plugins)
    * We need to keep track of all the plugins for each extension, so that we can remove them when the extension is unregistered
@@ -87,7 +96,9 @@ export class ExtensionManager {
      */
     this.lifecycle.addSubscription(
       editor.onMount(() => {
-        for (const extension of this.extensions) {
+        for (const extension of this.orderExtensionsForLifecycle(
+          this.extensions,
+        )) {
           this.lifecycle.mount(extension, {
             dom: editor.prosemirrorView.dom,
             root: editor.prosemirrorView.root,
@@ -183,6 +194,12 @@ export class ExtensionManager {
 
     if (!instance) {
       return undefined;
+    }
+
+    if (this.lifecycle.isDisposed(instance)) {
+      throw new Error(
+        `Cannot register disposed extension instance "${instance.key}". Create a fresh extension instance instead.`,
+      );
     }
 
     const disabled =
@@ -327,7 +344,29 @@ export class ExtensionManager {
       throw new Error("Cannot change extensions on a destroyed editor.");
     }
 
-    // ---- Remove phase (no updatePlugins call) ----
+    if (this.replacingExtensions) {
+      throw new Error(
+        "Cannot change extensions during another extension change.",
+      );
+    }
+
+    this.replacingExtensions = true;
+    this.extensionReadSnapshot = {
+      extensions: [...this.extensions],
+      factories: new Map(this.extensionFactories),
+    };
+    try {
+      this.replaceExtensionTransaction(toUnregister, toRegister);
+    } finally {
+      this.extensionReadSnapshot = undefined;
+      this.replacingExtensions = false;
+    }
+  }
+
+  private replaceExtensionTransaction(
+    toUnregister: ExtensionReferences,
+    toRegister: ExtensionInput | ExtensionInput[],
+  ) {
     const extensionsToRemove = this.resolveExtensions(toUnregister);
 
     for (const extension of extensionsToRemove) {
@@ -345,39 +384,24 @@ export class ExtensionManager {
       console.warn(`No extensions found to unregister`, toUnregister);
     }
 
+    const previousExtensions = [...this.extensions];
+    const previousExtensionFactories = new Map(this.extensionFactories);
+    const previousExtensionPlugins = new Map(this.extensionPlugins);
+    const previousDependents = new Map(
+      [...this.blockNoteExtensionDependents].map(([key, dependents]) => [
+        key,
+        new Set(dependents),
+      ]),
+    );
+    const previousProsemirrorPlugins =
+      this.editor.prosemirrorState.plugins.slice();
+    const removed = new Set(extensionsToRemove);
+    const removedKeys = new Set(extensionsToRemove.map(({ key }) => key));
+    const managedPluginRefs = new Set<Plugin>();
+    const managedPluginKeys = new Set<string>();
     let didWarnUnregister = false;
-    // We collect both plugin references and plugin keys to remove.
-    // Key-based matching is needed because re-entrant dispatches (e.g. from
-    // y-prosemirror view hooks) can replace plugin instances in the ProseMirror
-    // state with new objects that share the same key, making reference-based
-    // matching unreliable.
-    const pluginRefsToRemove = new Set<Plugin>();
-    const pluginKeysToRemove = new Set<string>();
-    let disposalFailure: unknown;
+
     for (const extension of extensionsToRemove) {
-      this.extensions = this.extensions.filter((e) => e !== extension);
-      this.extensionFactories.forEach((instance, factory) => {
-        if (instance === extension) {
-          this.extensionFactories.delete(factory);
-        }
-      });
-      try {
-        this.lifecycle.dispose(extension);
-      } catch (error) {
-        disposalFailure ??= error;
-      }
-
-      const plugins = this.extensionPlugins.get(extension);
-      plugins?.forEach((plugin) => {
-        pluginRefsToRemove.add(plugin);
-        const key = (plugin as any).spec?.key;
-        const keyStr = typeof key === "object" && key ? key.key : key;
-        if (typeof keyStr === "string") {
-          pluginKeysToRemove.add(keyStr);
-        }
-      });
-      this.extensionPlugins.delete(extension);
-
       if (extension.tiptapExtensions && !didWarnUnregister) {
         didWarnUnregister = true;
         // eslint-disable-next-line no-console
@@ -388,75 +412,172 @@ export class ExtensionManager {
       }
     }
 
-    // ---- Add phase (no updatePlugins call) ----
+    for (const plugins of previousExtensionPlugins.values()) {
+      for (const plugin of plugins) {
+        managedPluginRefs.add(plugin);
+        const key = (plugin as any).spec?.key;
+        const keyStr = typeof key === "object" && key ? key.key : key;
+        if (typeof keyStr === "string") {
+          managedPluginKeys.add(keyStr);
+        }
+      }
+    }
+
+    this.extensions = this.extensions.filter(
+      (extension) => !removed.has(extension),
+    );
+    this.extensionFactories.forEach((instance, factory) => {
+      if (removed.has(instance)) {
+        this.extensionFactories.delete(factory);
+      }
+    });
+    for (const extension of extensionsToRemove) {
+      this.extensionPlugins.delete(extension);
+    }
+    for (const [key, dependents] of this.blockNoteExtensionDependents) {
+      if (removedKeys.has(key)) {
+        this.blockNoteExtensionDependents.delete(key);
+        continue;
+      }
+      for (const removedKey of removedKeys) {
+        dependents.delete(removedKey);
+      }
+      if (dependents.size === 0) {
+        this.blockNoteExtensionDependents.delete(key);
+      }
+    }
+
+    const retained = new Set(this.extensions);
     const newExtensions = ([] as ExtensionInput[])
       .concat(toRegister)
       .filter(Boolean) as ExtensionInput[];
+    let pluginUpdateAttempted = false;
+    let stagedInLifecycleOrder: Extension[] | undefined;
 
-    const registeredExtensions = newExtensions
-      .map((ext) => this.addExtension(ext))
-      .filter(Boolean) as Extension[];
-
-    const pluginsToAdd: Plugin[] = [];
-    for (const extension of registeredExtensions) {
-      if (extension?.tiptapExtensions) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `Extension ${extension.key} has tiptap extensions, but these cannot be changed after initializing the editor. Please separate the extension into multiple extensions if you want to add them, or re-initialize the editor.`,
-          extension,
-        );
-      }
-
-      if (extension?.inputRules?.length) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `Extension ${extension.key} has input rules, but these cannot be changed after initializing the editor. Please separate the extension into multiple extensions if you want to add them, or re-initialize the editor.`,
-          extension,
-        );
-      }
-
-      this.getProsemirrorPluginsFromExtension(extension).plugins.forEach(
-        (plugin) => {
-          pluginsToAdd.push(plugin);
-        },
+    const rollback = () => {
+      const staged = this.extensions.filter(
+        (extension) => !previousExtensions.includes(extension),
       );
-    }
+      this.extensions = previousExtensions;
+      this.extensionFactories = previousExtensionFactories;
+      this.extensionPlugins = previousExtensionPlugins;
+      this.blockNoteExtensionDependents = previousDependents;
 
-    // Nothing to do
-    if (
-      !pluginRefsToRemove.size &&
-      !pluginKeysToRemove.size &&
-      !pluginsToAdd.length
-    ) {
-      if (disposalFailure) {
-        throw disposalFailure;
+      const disposalOrder = stagedInLifecycleOrder
+        ? [...stagedInLifecycleOrder].reverse()
+        : staged.reverse();
+      for (const extension of disposalOrder) {
+        try {
+          this.lifecycle.dispose(extension);
+        } catch {
+          // Preserve the transaction failure.
+        }
       }
-      return;
+    };
+
+    try {
+      for (const extension of newExtensions) {
+        this.addExtension(extension);
+      }
+
+      const staged = this.extensions.filter(
+        (extension) => !retained.has(extension),
+      );
+      const extensionsInDependencyOrder = this.orderExtensionsForLifecycle(
+        this.extensions,
+      );
+      const stagedInstances = new Set(
+        staged.filter((extension) => !previousExtensions.includes(extension)),
+      );
+      stagedInLifecycleOrder = extensionsInDependencyOrder.filter((extension) =>
+        stagedInstances.has(extension),
+      );
+      for (const extension of staged) {
+        if (extension.tiptapExtensions) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `Extension ${extension.key} has tiptap extensions, but these cannot be changed after initializing the editor. Please separate the extension into multiple extensions if you want to add them, or re-initialize the editor.`,
+            extension,
+          );
+        }
+
+        if (extension.inputRules?.length) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `Extension ${extension.key} has input rules, but these cannot be changed after initializing the editor. Please separate the extension into multiple extensions if you want to add them, or re-initialize the editor.`,
+            extension,
+          );
+        }
+
+        this.getProsemirrorPluginsFromExtension(extension);
+      }
+
+      const managedPlugins = extensionsInDependencyOrder.flatMap(
+        (extension) => this.extensionPlugins.get(extension) ?? [],
+      );
+      const didChangeExtensions =
+        stagedInstances.size > 0 ||
+        previousExtensions.some(
+          (extension) => !this.extensions.includes(extension),
+        );
+      if (
+        didChangeExtensions &&
+        (managedPluginRefs.size ||
+          managedPluginKeys.size ||
+          managedPlugins.length)
+      ) {
+        pluginUpdateAttempted = true;
+        this.updatePlugins((plugins) =>
+          this.replaceManagedPlugins(
+            plugins,
+            managedPluginRefs,
+            managedPluginKeys,
+            managedPlugins,
+          ),
+        );
+      }
+
+      if (!this.editor.headless) {
+        const context = {
+          dom: this.editor.prosemirrorView.dom,
+          root: this.editor.prosemirrorView.root,
+        };
+        for (const extension of stagedInLifecycleOrder) {
+          this.lifecycle.mount(extension, context);
+        }
+      }
+    } catch (error) {
+      if (pluginUpdateAttempted) {
+        try {
+          this.updatePlugins(() => previousProsemirrorPlugins);
+        } catch {
+          // Preserve the transaction failure.
+        }
+      }
+      rollback();
+      throw error;
     }
 
-    // ---- Single atomic plugin update ----
-    this.updatePlugins((plugins) => [
-      ...plugins.filter((plugin) => {
-        // Fast path: exact reference match
-        if (pluginRefsToRemove.has(plugin)) {
-          return false;
-        }
-        // Fallback: match by key string (handles cases where plugin instances
-        // in the state differ from the ones we tracked)
-        if (pluginKeysToRemove.size) {
-          const key = (plugin as any).spec?.key;
-          const keyStr = typeof key === "object" && key ? key.key : key;
-          if (typeof keyStr === "string" && pluginKeysToRemove.has(keyStr)) {
-            return false;
-          }
-        }
-        return true;
-      }),
-      ...pluginsToAdd,
-    ]);
+    this.extensionReadSnapshot = undefined;
+
+    let disposalFailure: unknown;
+    for (const extension of extensionsToRemove) {
+      if (this.extensions.includes(extension)) {
+        continue;
+      }
+      try {
+        this.lifecycle.dispose(extension);
+      } catch (error) {
+        disposalFailure ??= error;
+      }
+    }
 
     if (disposalFailure) {
-      throw disposalFailure;
+      throw new BlockNoteError(
+        "extension-cleanup-failed",
+        "Extension replacement committed, but cleanup of removed extensions failed.",
+        { cause: disposalFailure, retryable: false },
+      );
     }
   }
 
@@ -475,21 +596,53 @@ export class ExtensionManager {
     this.editor.prosemirrorView.updateState(state);
   }
 
-  /**
-   * Get all the extensions that are registered to the editor
-   */
-  public getTiptapExtensions(): AnyTiptapExtension[] {
-    // Start with the default tiptap extensions
-    const tiptapExtensions = getDefaultTiptapExtensions(
-      this.editor,
-      this.options,
-    ).filter((extension) => !this.disabledExtensions.has(extension.name));
+  private replaceManagedPlugins(
+    plugins: Plugin[],
+    managedPluginRefs: ReadonlySet<Plugin>,
+    managedPluginKeys: ReadonlySet<string>,
+    managedPlugins: readonly Plugin[],
+  ) {
+    const isManaged = (plugin: Plugin) => {
+      const key = (plugin as any).spec?.key;
+      const keyStr = typeof key === "object" && key ? key.key : key;
+      return (
+        managedPluginRefs.has(plugin) ||
+        (typeof keyStr === "string" && managedPluginKeys.has(keyStr))
+      );
+    };
+    let lastManagedSlot = -1;
+    for (let index = plugins.length - 1; index >= 0; index--) {
+      if (isManaged(plugins[index])) {
+        lastManagedSlot = index;
+        break;
+      }
+    }
+    const reordered: Plugin[] = [];
+    let nextManaged = 0;
 
-    const getPriority = sortByDependencies(
+    for (const [index, plugin] of plugins.entries()) {
+      if (isManaged(plugin)) {
+        if (nextManaged < managedPlugins.length) {
+          reordered.push(managedPlugins[nextManaged++]);
+        }
+        if (index === lastManagedSlot) {
+          reordered.push(...managedPlugins.slice(nextManaged));
+          nextManaged = managedPlugins.length;
+        }
+      } else {
+        reordered.push(plugin);
+      }
+    }
+
+    if (lastManagedSlot === -1) {
+      reordered.push(...managedPlugins);
+    }
+    return reordered;
+  }
+
+  private getExtensionPriority() {
+    return sortByDependencies(
       this.extensions.map((extension) => {
-        // A sub-extension declared via `blockNoteExtensions` must run before the
-        // extension(s) that declared it, so we merge those parents into its
-        // `runsBefore`.
         const dependents = new Set([
           ...(this.blockNoteExtensionDependents.get(extension.key) ?? []),
           ...(this.semanticExtensions.getDependents(extension.key) ?? []),
@@ -503,6 +656,26 @@ export class ExtensionManager {
         };
       }),
     );
+  }
+
+  private orderExtensionsForLifecycle(extensions: readonly Extension[]) {
+    const getPriority = this.getExtensionPriority();
+    return [...extensions].sort(
+      (left, right) => getPriority(right.key) - getPriority(left.key),
+    );
+  }
+
+  /**
+   * Get all the extensions that are registered to the editor
+   */
+  public getTiptapExtensions(): AnyTiptapExtension[] {
+    // Start with the default tiptap extensions
+    const tiptapExtensions = getDefaultTiptapExtensions(
+      this.editor,
+      this.options,
+    ).filter((extension) => !this.disabledExtensions.has(extension.name));
+
+    const getPriority = this.getExtensionPriority();
 
     const inputRulesByPriority = new Map<number, InputRule[]>();
     for (const extension of this.extensions) {
@@ -713,9 +886,9 @@ export class ExtensionManager {
    * Get all extensions
    */
   public getExtensions(): Map<string, Extension> {
-    return new Map(
-      this.extensions.map((extension) => [extension.key, extension]),
-    );
+    const extensions =
+      this.extensionReadSnapshot?.extensions ?? this.extensions;
+    return new Map(extensions.map((extension) => [extension.key, extension]));
   }
 
   /**
@@ -744,14 +917,18 @@ export class ExtensionManager {
           ? Extension
           : never)
     | undefined {
+    const extensions =
+      this.extensionReadSnapshot?.extensions ?? this.extensions;
+    const factories =
+      this.extensionReadSnapshot?.factories ?? this.extensionFactories;
     if (typeof extension === "string") {
-      const instance = this.extensions.find((e) => e.key === extension);
+      const instance = extensions.find((e) => e.key === extension);
       if (!instance) {
         return undefined;
       }
       return instance as any;
     } else if (typeof extension === "function") {
-      const instance = this.extensionFactories.get(extension);
+      const instance = factories.get(extension);
       if (!instance) {
         return undefined;
       }
@@ -764,12 +941,16 @@ export class ExtensionManager {
    * Check if an extension exists
    */
   public hasExtension(key: string | Extension | AnyExtensionFactory): boolean {
+    const extensions =
+      this.extensionReadSnapshot?.extensions ?? this.extensions;
+    const factories =
+      this.extensionReadSnapshot?.factories ?? this.extensionFactories;
     if (typeof key === "string") {
-      return this.extensions.some((e) => e.key === key);
+      return extensions.some((e) => e.key === key);
     } else if (typeof key === "object" && "key" in key) {
-      return this.extensions.some((e) => e.key === key.key);
+      return extensions.some((e) => e.key === key.key);
     } else if (typeof key === "function") {
-      return this.extensionFactories.has(key);
+      return factories.has(key);
     }
     return false;
   }
