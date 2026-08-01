@@ -3,6 +3,7 @@
  */
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 import * as Y from "@y/y";
+import { TextSelection } from "prosemirror-state";
 
 import type { BlockNoteStore } from "../../platform/BlockNoteStore.js";
 import {
@@ -14,7 +15,11 @@ import {
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
 } from "./suggestions/native.js";
-import { previewFromIds } from "./suggestions/model.js";
+import {
+  getLedgerTypes,
+  previewFromIds,
+  rangeClaimId,
+} from "./suggestions/model.js";
 import {
   cloneDoc,
   createEditor,
@@ -146,6 +151,46 @@ describe("SuggestionsExtension", () => {
     expect(selectedText(editor)).toBe("Y");
   });
 
+  it("selects one exact span when a suggestion owns disjoint ranges", () => {
+    const { suggestionDoc, editor } = createFixture("abcd");
+    suggestions(editor).enableSuggestions();
+    insertText(editor, positionAfter(editor, "a"), "X");
+    const first = pending(editor)[0]!;
+    insertText(editor, textEnd(editor), "Y");
+    const second = pending(editor).find(({ id }) => id !== first.id)!;
+    const ledger = getLedgerTypes(suggestionDoc);
+    const moved: Array<{
+      key: string;
+      value: {
+        version: 2;
+        suggestionId: string;
+        role: "insert" | "delete";
+        client: number;
+        clock: number;
+        length: number;
+      };
+    }> = [];
+    ledger.ranges.forEachAttr((value: unknown, key) => {
+      const claim = value as (typeof moved)[number]["value"];
+      if (typeof key === "string" && claim.suggestionId === second.id) {
+        moved.push({ key, value: claim });
+      }
+    });
+    suggestionDoc.transact(() => {
+      ledger.headers.deleteAttr(second.id);
+      for (const { key, value } of moved) {
+        ledger.ranges.deleteAttr(key);
+        const claim = { ...value, suggestionId: first.id };
+        ledger.ranges.setAttr(rangeClaimId(first.id, claim.role, claim), claim);
+      }
+    });
+
+    suggestions(editor).select(first.id);
+
+    expect(pending(editor)).toHaveLength(1);
+    expect(selectedText(editor)).toBe("X");
+  });
+
   it("selects the full replacement range from semantic content ids", () => {
     const { editor } = createFixture("hello world");
     suggestions(editor).enableSuggestions();
@@ -163,22 +208,62 @@ describe("SuggestionsExtension", () => {
 
     expect(ranges.length).toBeGreaterThan(0);
     expect(editor.prosemirrorState.selection.from).toBe(ranges[0]!.from);
-    expect(editor.prosemirrorState.selection.to).toBe(ranges.at(-1)!.to);
-    expect(selectedText(editor).length).toBeGreaterThan(target.preview.length);
+    expect(editor.prosemirrorState.selection.to).toBe(ranges[0]!.to);
   });
 
-  it("leaves selection unchanged when the suggestion view is disabled", () => {
+  it("selects an insertion anchor in the disabled base view", () => {
     const { editor } = createFixture("abcd");
     suggestions(editor).enableSuggestions();
-    insertText(editor, textEnd(editor), "X");
+    insertText(editor, positionAfter(editor, "a"), "X");
     const target = pending(editor)[0]!;
     suggestions(editor).disableSuggestions();
-    const before = editor.prosemirrorState.selection;
+    const expected = positionAfter(editor, "a");
+    const end = textEnd(editor);
+    editor.transact((transaction) => {
+      transaction.setSelection(TextSelection.create(transaction.doc, end));
+    });
 
     suggestions(editor).select(target.id);
 
-    expect(editor.prosemirrorState.selection.from).toBe(before.from);
-    expect(editor.prosemirrorState.selection.to).toBe(before.to);
+    expect(editor.prosemirrorState.selection.from).toBe(expected);
+    expect(editor.prosemirrorState.selection.to).toBe(expected);
+  });
+
+  it("selects the replaced content in the disabled base view", () => {
+    const { editor } = createFixture("hello world");
+    suggestions(editor).enableSuggestions();
+    setText(editor, "hello universe");
+    const target = pending(editor)[0]!;
+    suggestions(editor).disableSuggestions();
+
+    suggestions(editor).select(target.id);
+
+    expect(selectedText(editor)).toBe("wo");
+  });
+
+  it("publishes and observes ledger state before a view is mounted", () => {
+    const seed = createFixture("abcd");
+    suggestions(seed.editor).enableSuggestions();
+    insertText(seed.editor, positionAfter(seed.editor, "a"), "X");
+    const baseDoc = cloneDoc(seed.baseDoc);
+    const suggestionDoc = cloneDoc(seed.suggestionDoc, {
+      isSuggestionDoc: true,
+    });
+    const renderer = Y.createDiffRenderer(baseDoc, suggestionDoc, {
+      attrs: new Y.Attributions(),
+    });
+    const headless = createEditor(baseDoc, {
+      suggestionDoc,
+      renderer,
+      mount: false,
+    });
+
+    expect(pending(headless)).toHaveLength(1);
+
+    insertText(seed.editor, textEnd(seed.editor), "Y");
+    Y.applyUpdate(suggestionDoc, Y.encodeStateAsUpdate(seed.suggestionDoc));
+
+    expect(pending(headless)).toHaveLength(2);
   });
 
   it("acceptAll applies only exact tracked ids and ignores an untracked diff", async () => {

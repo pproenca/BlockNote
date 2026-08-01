@@ -1,6 +1,7 @@
 import type { BlockNoteEditor } from "../../../editor/BlockNoteEditor.js";
 import { getIndexedRecords, observeNativeSuggestions } from "./ledger.js";
 import type { NativeSuggestionsBinding } from "./model.js";
+import { createLocalNativeSuggestionsExecutor } from "./resolution.js";
 
 const bindings = new WeakMap<
   BlockNoteEditor<any, any, any>,
@@ -30,12 +31,26 @@ export function setNativeSuggestionsResolutionPhaseHook(
   }
 }
 
+export function setNativeSuggestionsLocalExecutor(
+  editor: BlockNoteEditor<any, any, any>,
+  enabled: boolean,
+) {
+  const binding = bindings.get(editor);
+  if (binding) {
+    binding.submitReview = enabled
+      ? createLocalNativeSuggestionsExecutor(binding)
+      : undefined;
+  }
+}
+
 export {
   getIndexedRecords as getNativeSuggestionRecords,
   observeNativeSuggestions,
 };
 export {
   acceptNativeSuggestion,
+  createLocalNativeSuggestionsExecutor,
+  executeNativeSuggestionReviews,
   rejectNativeSuggestion,
   resolveNativeSuggestions,
 } from "./resolution.js";

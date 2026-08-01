@@ -7,6 +7,7 @@ import * as Y from "@y/y";
 import {
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
+  executeNativeSuggestionReviews,
   setNativeSuggestionsResolutionPhaseHook,
 } from "./native.js";
 import {
@@ -24,12 +25,113 @@ import {
   insertText,
   pending,
   readBaseText,
+  setText,
   suggestions,
+  syncDocs,
   textEnd,
   uuidFor,
 } from "./test-fixture.js";
 
 describe("suggestion resolution", () => {
+  it.each([
+    ["deletion", "hello world", "hello"],
+    ["replacement", "hello world", "hello universe"],
+  ] as const)(
+    "rejects a %s after the deleted payload passes through gc",
+    async (_kind, initial, proposed) => {
+      const { baseDoc, suggestionDoc, editor } = createFixture(initial);
+      expect(suggestionDoc.gc).toBe(true);
+      suggestions(editor).enableSuggestions();
+      setText(editor, proposed);
+      const id = pending(editor)[0]!.id;
+      const authorityBase = cloneDoc(baseDoc);
+      const authoritySuggestion = cloneDoc(suggestionDoc, {
+        gc: false,
+        isSuggestionDoc: true,
+      });
+      const authorityRenderer = Y.createDiffRenderer(
+        authorityBase,
+        authoritySuggestion,
+        {
+          attrs: new Y.Attributions(),
+        },
+      );
+      const authority = createEditor(authorityBase, {
+        suggestionDoc: authoritySuggestion,
+        renderer: authorityRenderer,
+        mount: false,
+      });
+
+      await suggestions(authority).reject(id);
+
+      expect(readBaseText(authorityBase)).toBe(initial);
+      expect(readBaseText(authoritySuggestion)).toBe(initial);
+      expect(suggestions(authority).store.get()).toEqual([
+        expect.objectContaining({ id, status: "rejected" }),
+      ]);
+    },
+  );
+
+  it("keeps opposing peer review commands intent-only before one authority executes", async () => {
+    const seed = createFixture("a");
+    suggestions(seed.editor).enableSuggestions();
+    insertText(seed.editor, textEnd(seed.editor), "X");
+    const id = pending(seed.editor)[0]!.id;
+    const baseA = cloneDoc(seed.baseDoc);
+    const suggestionA = cloneDoc(seed.suggestionDoc, {
+      isSuggestionDoc: true,
+    });
+    const baseB = cloneDoc(seed.baseDoc);
+    const suggestionB = cloneDoc(seed.suggestionDoc, {
+      isSuggestionDoc: true,
+    });
+    const editorA = createEditor(baseA, {
+      suggestionDoc: suggestionA,
+      renderer: Y.createDiffRenderer(baseA, suggestionA, {
+        attrs: new Y.Attributions(),
+      }),
+      executeReviews: false,
+    });
+    const editorB = createEditor(baseB, {
+      suggestionDoc: suggestionB,
+      renderer: Y.createDiffRenderer(baseB, suggestionB, {
+        attrs: new Y.Attributions(),
+      }),
+      executeReviews: false,
+    });
+
+    await suggestions(editorA).accept(id);
+    await suggestions(editorB).reject(id);
+
+    expect(readBaseText(baseA)).toBe("a");
+    expect(readBaseText(baseB)).toBe("a");
+    expect(readBaseText(suggestionA)).toBe("aX");
+    expect(readBaseText(suggestionB)).toBe("aX");
+    expect(suggestionA.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
+    expect(suggestionB.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
+
+    syncDocs(suggestionA, suggestionB);
+    expect(suggestionA.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
+    expect(suggestionB.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
+
+    executeNativeSuggestionReviews(
+      getNativeSuggestionsBinding(editorA)!,
+      uuidFor(10),
+    );
+    syncDocs(baseA, baseB);
+    syncDocs(suggestionA, suggestionB);
+    const terminal = suggestions(editorA).store.get()[0]!;
+    const expected = terminal.status === "accepted" ? "aX" : "a";
+
+    expect(terminal.status).not.toBe("pending");
+    expect(suggestionA.get(LEDGER_NAMES.receipts).attrSize).toBe(1);
+    expect(suggestionB.get(LEDGER_NAMES.receipts).attrSize).toBe(1);
+    expect(readBaseText(baseA)).toBe(expected);
+    expect(readBaseText(baseB)).toBe(expected);
+    expect(readBaseText(suggestionA)).toBe(expected);
+    expect(readBaseText(suggestionB)).toBe(expected);
+  });
+
   it("never reopens a terminal receipt from stale v1 projection or late ranges", async () => {
     const { suggestionDoc, editor } = createFixture("a");
     suggestions(editor).enableSuggestions();

@@ -1,6 +1,7 @@
 import { uuidv4 } from "lib0/random";
 import * as Y from "@y/y";
 
+import { BlockNoteError } from "../../../platform/BlockNoteError.js";
 import { findTypeInOtherYdoc } from "../../utils.js";
 import {
   activateAttribution,
@@ -13,8 +14,8 @@ import {
   decisionEntryId,
   getLedgerTypes,
   idSetFromRanges,
-  isAcceptIntent,
   isDisposition,
+  isExecution,
   isHeader,
   isRangeClaim,
   isReceipt,
@@ -30,14 +31,15 @@ import {
   utf8Length,
   type IndexedRangeClaim,
   type LedgerTypes,
-  type NativeAcceptIntent,
   type NativeDisposition,
+  type NativeExecution,
   type NativeRangeClaim,
   type NativeReceipt,
   type NativeSuggestionHeader,
   type NativeSuggestionRecord,
   type NativeSuggestionsBinding,
 } from "./model.js";
+import { releaseDeletedContent, retainDeletedContent } from "./retention.js";
 
 type LedgerIndex = {
   dirty: boolean;
@@ -61,6 +63,84 @@ function ledgerEntryCount(ledger: LedgerTypes) {
     (total, type) => total + type.attrSize,
     0,
   );
+}
+
+function approximateLedgerBytes(ledger: LedgerTypes) {
+  let bytes = 0;
+  ledger.headers.forEachAttr((value: unknown, key) => {
+    if (typeof key === "string" && isHeader(key, value)) {
+      bytes += 96 + utf8Length(value.authorId ?? "");
+    }
+  });
+  ledger.ranges.forEachAttr((value: unknown, key) => {
+    if (typeof key === "string" && isRangeClaim(key, value)) {
+      bytes += 128;
+    }
+  });
+  ledger.dispositions.forEachAttr((value: unknown, key) => {
+    if (typeof key === "string" && isDisposition(key, value)) {
+      bytes += 128;
+    }
+  });
+  ledger.intents.forEachAttr((value: unknown, key) => {
+    if (typeof key === "string" && isExecution(key, value)) {
+      bytes += 160;
+    }
+  });
+  ledger.receipts.forEachAttr((value: unknown, key) => {
+    if (typeof key === "string" && isReceipt(key, value)) {
+      bytes += 128 + utf8Length(value.preview);
+    }
+  });
+  return bytes;
+}
+
+type LedgerReservation = {
+  readonly headers?: number;
+  readonly ranges?: number;
+  readonly entries: number;
+  readonly bytes: number;
+};
+
+export function assertLedgerCapacity(
+  binding: NativeSuggestionsBinding,
+  reservation: LedgerReservation,
+) {
+  const ledger = getLedgerTypes(binding.suggestionDoc);
+  if (
+    ledger.headers.attrSize + (reservation.headers ?? 0) >
+      NATIVE_SUGGESTION_LIMITS.maxRecords ||
+    ledger.ranges.attrSize + (reservation.ranges ?? 0) >
+      NATIVE_SUGGESTION_LIMITS.maxTotalRanges ||
+    ledgerEntryCount(ledger) + reservation.entries >
+      NATIVE_SUGGESTION_LIMITS.maxLedgerEntries ||
+    approximateLedgerBytes(ledger) + reservation.bytes >
+      NATIVE_SUGGESTION_LIMITS.maxLedgerBytes
+  ) {
+    throw new BlockNoteError(
+      "document-too-large",
+      "Suggestion capacity is exhausted",
+    );
+  }
+}
+
+export function assertCanTrackSuggestionEdit(
+  binding: NativeSuggestionsBinding,
+) {
+  const canContinue = [...getIndexedRecords(binding).values()].some(
+    (record) =>
+      record.status === "pending" &&
+      !record.hasExecution &&
+      record.creatorId === binding.creatorId &&
+      record.rangeKeys.length < NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord,
+  );
+  const headers = canContinue ? 0 : 1;
+  assertLedgerCapacity(binding, {
+    headers,
+    ranges: 1,
+    entries: headers + 1,
+    bytes: 224 + utf8Length(actorIdFor(binding) ?? ""),
+  });
 }
 
 function rangeIsInScope(doc: Y.Doc, scope: Y.Type, range: NativeRangeClaim) {
@@ -105,7 +185,7 @@ function scanLedger(binding: NativeSuggestionsBinding) {
   const headers = new Map<string, NativeSuggestionHeader>();
   const claims = new Map<string, IndexedRangeClaim[]>();
   const dispositions = new Map<string, NativeDisposition[]>();
-  const intents = new Map<string, NativeAcceptIntent>();
+  const executions = new Map<string, NativeExecution[]>();
   const receipts = new Map<string, NativeReceipt>();
   let bytes = 0;
   let rangeCount = 0;
@@ -134,9 +214,11 @@ function scanLedger(binding: NativeSuggestionsBinding) {
     }
   });
   ledger.intents.forEachAttr((value: unknown, key) => {
-    if (typeof key === "string" && isAcceptIntent(key, value)) {
-      intents.set(key, value);
-      bytes += 112;
+    if (typeof key === "string" && isExecution(key, value)) {
+      const existing = executions.get(value.suggestionId) ?? [];
+      existing.push(value);
+      executions.set(value.suggestionId, existing);
+      bytes += 160;
     }
   });
   ledger.receipts.forEachAttr((value: unknown, key) => {
@@ -163,20 +245,42 @@ function scanLedger(binding: NativeSuggestionsBinding) {
     const orderedDispositions = (dispositions.get(id) ?? []).sort(
       (left, right) => compareCodeUnits(left.decisionId, right.decisionId),
     );
+    const receipted = orderedDispositions.find(
+      (candidate) =>
+        receipts.get(decisionEntryId(id, candidate.decisionId))?.status ===
+        candidate.status,
+    );
+    const executed = (executions.get(id) ?? [])
+      .sort(
+        (left, right) =>
+          compareCodeUnits(left.decisionId, right.decisionId) ||
+          compareCodeUnits(left.fenceId, right.fenceId),
+      )
+      .find((candidate) =>
+        orderedDispositions.some(
+          (disposition) =>
+            disposition.decisionId === candidate.decisionId &&
+            disposition.status === candidate.status,
+        ),
+      );
     const disposition =
-      orderedDispositions.find(
-        (candidate) =>
-          receipts.get(decisionEntryId(id, candidate.decisionId))?.status ===
-          candidate.status,
-      ) ?? orderedDispositions[0];
+      receipted ??
+      (executed
+        ? orderedDispositions.find(
+            (candidate) =>
+              candidate.decisionId === executed.decisionId &&
+              candidate.status === executed.status,
+          )
+        : undefined) ??
+      orderedDispositions[0];
     const decisionId = disposition?.decisionId ?? null;
     const receiptKey = decisionId ? decisionEntryId(id, decisionId) : null;
     const receipt = receiptKey ? receipts.get(receiptKey) : undefined;
     const hasReceipt = receipt?.status === disposition?.status;
-    const hasAcceptIntent =
-      disposition?.status === "accepted" &&
-      receiptKey !== null &&
-      intents.get(receiptKey)?.status === "accepted";
+    const hasExecution =
+      disposition !== undefined &&
+      executed?.decisionId === disposition.decisionId &&
+      executed.status === disposition.status;
     const recordClaims = claims.get(id) ?? [];
     if (recordClaims.length > NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord) {
       continue;
@@ -196,14 +300,15 @@ function scanLedger(binding: NativeSuggestionsBinding) {
         deleteRanges: [],
         contentIds: Y.createContentIds(),
         decisionId,
-        hasAcceptIntent,
+        decisionStatus: disposition.status,
+        hasExecution,
         hasReceipt: true,
         rangeKeys: recordClaims.map((claim) => claim.key),
       });
       continue;
     }
 
-    const allowResolvedRanges = disposition !== undefined && !hasReceipt;
+    const allowResolvedRanges = hasExecution && !hasReceipt;
     const proposedInsertRanges = recordClaims
       .filter(
         (claim) =>
@@ -236,13 +341,14 @@ function scanLedger(binding: NativeSuggestionsBinding) {
       creatorId: header.creatorId,
       kind: kindFor(inserts, deletes),
       preview: insertionPreview || deletionPreview,
-      status: disposition?.status ?? "pending",
+      status: "pending",
       order: orderFor(id, insertRanges, deleteRanges),
       insertRanges,
       deleteRanges,
       contentIds: Y.createContentIds(inserts, deletes),
       decisionId,
-      hasAcceptIntent,
+      decisionStatus: disposition?.status ?? null,
+      hasExecution,
       hasReceipt: false,
       rangeKeys: recordClaims.map((claim) => claim.key),
     });
@@ -253,15 +359,30 @@ function scanLedger(binding: NativeSuggestionsBinding) {
   for (const candidate of candidates.sort((left, right) =>
     compareCodeUnits(left.id, right.id),
   )) {
-    const claimed = Y.mergeIdSets([
-      candidate.contentIds.inserts,
-      candidate.contentIds.deletes,
-    ]);
-    if (!Y.intersectSets(owned, claimed).isEmpty()) {
+    if (candidate.hasReceipt) {
+      records.set(candidate.id, candidate);
+      continue;
+    }
+    const inserts = Y.diffIdSet(candidate.contentIds.inserts, owned);
+    const deletes = Y.diffIdSet(candidate.contentIds.deletes, owned);
+    const claimed = Y.mergeIdSets([inserts, deletes]);
+    if (claimed.isEmpty()) {
       continue;
     }
     Y.insertIntoIdSet(owned, claimed);
-    records.set(candidate.id, candidate);
+    const insertRanges = rangesFromIdSet(inserts);
+    const deleteRanges = rangesFromIdSet(deletes);
+    records.set(candidate.id, {
+      ...candidate,
+      kind: kindFor(inserts, deletes),
+      preview:
+        previewFromIds(binding.suggestionDoc, inserts) ||
+        previewFromIds(binding.fragment.doc, deletes),
+      order: orderFor(candidate.id, insertRanges, deleteRanges),
+      insertRanges,
+      deleteRanges,
+      contentIds: Y.createContentIds(inserts, deletes),
+    });
   }
   return records;
 }
@@ -327,19 +448,11 @@ function appendClaims(
           .filter(
             (record) =>
               record.status === "pending" &&
+              !record.hasExecution &&
               record.creatorId === binding.creatorId &&
               contentIdsTouch(transaction, changes, record.contentIds),
           )
           .sort((left, right) => compareCodeUnits(left.id, right.id))[0];
-  const suggestionId = continuation?.id ?? uuidv4();
-  const header: NativeSuggestionHeader | undefined = continuation
-    ? undefined
-    : {
-        version: 2,
-        id: suggestionId,
-        authorId,
-        creatorId: binding.creatorId,
-      };
   const ranges = [
     ...rangesFromIdSet(inserts).map((range) => ({
       role: "insert" as const,
@@ -350,27 +463,84 @@ function appendClaims(
       range,
     })),
   ];
-  if (
-    (continuation?.rangeKeys.length ?? 0) + ranges.length >
-    NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord
-  ) {
+  if (ranges.length === 0) {
     return;
+  }
+
+  const assignments: Array<{
+    id: string;
+    header?: NativeSuggestionHeader;
+    ranges: typeof ranges;
+  }> = [];
+  let offset = 0;
+  if (continuation) {
+    const available =
+      NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord -
+      continuation.rangeKeys.length;
+    if (available > 0) {
+      assignments.push({
+        id: continuation.id,
+        ranges: ranges.slice(0, available),
+      });
+      offset = Math.min(available, ranges.length);
+    }
+  }
+  while (offset < ranges.length) {
+    const id = uuidv4();
+    assignments.push({
+      id,
+      header: {
+        version: 2,
+        id,
+        authorId,
+        creatorId: binding.creatorId,
+      },
+      ranges: ranges.slice(
+        offset,
+        offset + NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord,
+      ),
+    });
+    offset += NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord;
+  }
+
+  const headerCount = assignments.filter(({ header }) => header).length;
+  assertLedgerCapacity(binding, {
+    headers: headerCount,
+    ranges: ranges.length,
+    entries: headerCount + ranges.length,
+    bytes:
+      headerCount * (96 + utf8Length(authorId ?? "")) + ranges.length * 128,
+  });
+
+  for (const assignment of assignments) {
+    retainDeletedContent(
+      binding,
+      transaction,
+      assignment.id,
+      idSetFromRanges(
+        assignment.ranges
+          .filter(({ role }) => role === "delete")
+          .map(({ range }) => range),
+      ),
+    );
   }
 
   const ledger = getLedgerTypes(binding.suggestionDoc);
   binding.suggestionDoc.transact(() => {
-    if (header) {
-      ledger.headers.setAttr(header.id, header);
-    }
-    for (const { role, range } of ranges) {
-      const key = rangeClaimId(suggestionId, role, range);
-      const claim: NativeRangeClaim = {
-        version: 2,
-        suggestionId,
-        role,
-        ...range,
-      };
-      ledger.ranges.setAttr(key, claim);
+    for (const assignment of assignments) {
+      if (assignment.header) {
+        ledger.headers.setAttr(assignment.id, assignment.header);
+      }
+      for (const { role, range } of assignment.ranges) {
+        const key = rangeClaimId(assignment.id, role, range);
+        const claim: NativeRangeClaim = {
+          version: 2,
+          suggestionId: assignment.id,
+          role,
+          ...range,
+        };
+        ledger.ranges.setAttr(key, claim);
+      }
     }
   }, ledgerOrigin);
   markLedgerDirty(binding);
@@ -381,9 +551,11 @@ function compactTerminalRanges(
   binding: NativeSuggestionsBinding,
   records: ReadonlyMap<string, NativeSuggestionRecord>,
 ) {
-  const keys = [...records.values()]
-    .filter((record) => record.hasReceipt && record.rangeKeys.length > 0)
-    .flatMap((record) => record.rangeKeys);
+  const terminal = [...records.values()].filter((record) => record.hasReceipt);
+  for (const record of terminal) {
+    releaseDeletedContent(binding, record.id);
+  }
+  const keys = terminal.flatMap((record) => record.rangeKeys);
   if (keys.length === 0) {
     return;
   }

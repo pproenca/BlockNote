@@ -8,6 +8,7 @@ import { findSuggestionRanges } from "./analysis.js";
 import {
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
+  setNativeSuggestionsLocalExecutor,
 } from "./native.js";
 import { LEDGER_NAMES, rangeClaimId, rangesFromIdSet } from "./model.js";
 
@@ -31,6 +32,8 @@ export function createEditor(
     suggestionDoc?: Y.Doc;
     renderer?: Y.DiffRenderer;
     actorId?: string;
+    mount?: boolean;
+    executeReviews?: boolean;
   } = {},
 ) {
   const editor = BlockNoteEditor.create(
@@ -47,7 +50,10 @@ export function createEditor(
       },
     }),
   );
-  editor.mount(document.createElement("div"));
+  setNativeSuggestionsLocalExecutor(editor, options.executeReviews !== false);
+  if (options.mount !== false) {
+    editor.mount(document.createElement("div"));
+  }
   editors.push(editor);
   return editor;
 }

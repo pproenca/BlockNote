@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Y from "@y/y";
 
+import { BlockNoteError } from "../../../platform/BlockNoteError.js";
 import {
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
@@ -305,6 +306,61 @@ describe("suggestion ledger", () => {
     }
   });
 
+  it("subtracts an overlapping claim and preserves its unique remainder", () => {
+    const seed = createFixture("a");
+    const hostile = cloneDoc(seed.suggestionDoc, { isSuggestionDoc: true });
+    const hostileEditor = createEditor(hostile);
+    setText(hostileEditor, "aXYZ");
+    Y.applyUpdate(seed.suggestionDoc, Y.encodeStateAsUpdate(hostile));
+    const ranges = rangesFromIdSet(
+      Y.createIdSetFromIdMap(seed.renderer.inserts),
+    );
+    expect(ranges).toHaveLength(1);
+    const source = ranges[0]!;
+    expect(source.length).toBeGreaterThanOrEqual(3);
+    const lowerId = uuidFor(1);
+    const higherId = uuidFor(2);
+    const lower = { client: source.client, clock: source.clock, length: 2 };
+    const higher = {
+      client: source.client,
+      clock: source.clock + 1,
+      length: 2,
+    };
+    const ledger = seed.suggestionDoc.get(LEDGER_NAMES.headers);
+    const claims = seed.suggestionDoc.get(LEDGER_NAMES.ranges);
+    seed.suggestionDoc.transact(() => {
+      ledger.setAttr(lowerId, {
+        version: 2,
+        id: lowerId,
+        authorId: "lower",
+        creatorId: uuidFor(11),
+      });
+      ledger.setAttr(higherId, {
+        version: 2,
+        id: higherId,
+        authorId: "higher",
+        creatorId: uuidFor(12),
+      });
+      claims.setAttr(rangeClaimId(lowerId, "insert", lower), {
+        version: 2,
+        suggestionId: lowerId,
+        role: "insert",
+        ...lower,
+      });
+      claims.setAttr(rangeClaimId(higherId, "insert", higher), {
+        version: 2,
+        suggestionId: higherId,
+        role: "insert",
+        ...higher,
+      });
+    });
+
+    expect(pending(seed.editor)).toEqual([
+      expect.objectContaining({ id: lowerId, preview: "XY" }),
+      expect.objectContaining({ id: higherId, preview: "Z" }),
+    ]);
+  });
+
   it("never coalesces edits from anonymous peers", () => {
     const seed = createFixture("left right");
     const baseA = cloneDoc(seed.baseDoc);
@@ -370,6 +426,79 @@ describe("suggestion ledger", () => {
     });
 
     expect(suggestions(editor).store.get()).toEqual([]);
+  });
+
+  it("fails before editing when aggregate suggestion capacity is exhausted", () => {
+    const { baseDoc, suggestionDoc, editor } = createFixture("a");
+    suggestions(editor).enableSuggestions();
+    const headers = suggestionDoc.get(LEDGER_NAMES.headers);
+    suggestionDoc.transact(() => {
+      for (
+        let index = 1;
+        index <= NATIVE_SUGGESTION_LIMITS.maxRecords;
+        index += 1
+      ) {
+        const id = uuidFor(index);
+        headers.setAttr(id, {
+          version: 2,
+          id,
+          authorId: "hostile",
+          creatorId: uuidFor(999_999),
+        });
+      }
+    });
+    let failure: unknown;
+
+    try {
+      insertText(editor, textEnd(editor), "X");
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(BlockNoteError);
+    expect(failure).toMatchObject({ code: "document-too-large" });
+    expect(editor.prosemirrorState.doc.textContent).toBe("a");
+    expect(readBaseText(baseDoc)).toBe("a");
+    expect(headers.attrSize).toBe(NATIVE_SUGGESTION_LIMITS.maxRecords);
+    expect(suggestionDoc.get(LEDGER_NAMES.ranges).attrSize).toBe(0);
+  });
+
+  it("starts another tracked record when a continuation record is full", () => {
+    const { suggestionDoc, editor } = createFixture("a");
+    suggestions(editor).enableSuggestions();
+    insertText(editor, textEnd(editor), "X");
+    const first = pending(editor)[0]!;
+    const ranges = suggestionDoc.get(LEDGER_NAMES.ranges);
+    suggestionDoc.transact(() => {
+      for (
+        let index = 1;
+        index < NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord;
+        index += 1
+      ) {
+        const synthetic = {
+          client: 1_000_000 + index,
+          clock: 0,
+          length: 1,
+        };
+        ranges.setAttr(rangeClaimId(first.id, "insert", synthetic), {
+          version: 2,
+          suggestionId: first.id,
+          role: "insert",
+          ...synthetic,
+        });
+      }
+    });
+    expect(ranges.attrSize).toBe(NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord);
+
+    insertText(editor, textEnd(editor), "Y");
+
+    expect(pending(editor)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: first.id, preview: "X" }),
+        expect.objectContaining({ preview: "Y" }),
+      ]),
+    );
+    expect(pending(editor)).toHaveLength(2);
   });
 
   it("does not leak afterTransaction observers across repeated rejection", async () => {

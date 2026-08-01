@@ -34,11 +34,12 @@ export type NativeDisposition = {
   readonly status: Exclude<NativeSuggestionStatus, "pending">;
 };
 
-export type NativeAcceptIntent = {
+export type NativeExecution = {
   readonly version: 2;
   readonly suggestionId: string;
   readonly decisionId: string;
-  readonly status: "accepted";
+  readonly status: Exclude<NativeSuggestionStatus, "pending">;
+  readonly fenceId: string;
 };
 
 export type NativeReceipt = {
@@ -63,7 +64,8 @@ export type NativeSuggestionRecord = {
   readonly deleteRanges: readonly NativeIdRange[];
   readonly contentIds: Y.ContentIds;
   readonly decisionId: string | null;
-  readonly hasAcceptIntent: boolean;
+  readonly decisionStatus: Exclude<NativeSuggestionStatus, "pending"> | null;
+  readonly hasExecution: boolean;
   readonly hasReceipt: boolean;
   readonly rangeKeys: readonly string[];
 };
@@ -79,6 +81,7 @@ export type NativeSuggestionsBinding = {
   readonly renderer: Y.DiffRenderer;
   readonly creatorId: string;
   readonly getActorId: () => string | null;
+  submitReview?: () => void | Promise<void>;
   onResolutionPhase?: (phase: NativeResolutionPhase) => void;
 };
 
@@ -217,20 +220,21 @@ export function isDisposition(
   );
 }
 
-export function isAcceptIntent(
+export function isExecution(
   key: string,
   value: unknown,
-): value is NativeAcceptIntent {
+): value is NativeExecution {
   if (!value || typeof value !== "object") {
     return false;
   }
-  const intent = value as Partial<NativeAcceptIntent>;
+  const execution = value as Partial<NativeExecution>;
   return (
-    intent.version === 2 &&
-    isCanonicalUuid(intent.suggestionId) &&
-    isCanonicalUuid(intent.decisionId) &&
-    intent.status === "accepted" &&
-    decisionEntryId(intent.suggestionId, intent.decisionId) === key
+    execution.version === 2 &&
+    isCanonicalUuid(execution.suggestionId) &&
+    isCanonicalUuid(execution.decisionId) &&
+    (execution.status === "accepted" || execution.status === "rejected") &&
+    isCanonicalUuid(execution.fenceId) &&
+    decisionEntryId(execution.suggestionId, execution.decisionId) === key
   );
 }
 
