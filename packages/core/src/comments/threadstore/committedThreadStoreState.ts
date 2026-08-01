@@ -1,7 +1,6 @@
 import type {
   BlockNoteThread,
   BlockNoteThreadSnapshot,
-  BlockNoteThreadStoreChange,
   BlockNoteThreadStoreCommitReceipt,
   BlockNoteThreadStoreRevision,
 } from "../types.js";
@@ -12,6 +11,7 @@ import {
 } from "./immutableThreadSnapshot.js";
 import {
   compareThreadStoreRevision,
+  invalidThreadStoreState,
   normalizeThreadStoreCommitReceipt,
   readThreadStoreRevision,
   sameThreadStoreRevision,
@@ -23,12 +23,8 @@ type Thread<TThreadMetadata, TCommentMetadata> = BlockNoteThread<
   TCommentMetadata
 >;
 
-type AppliedChange<TThreadMetadata, TCommentMetadata> = {
-  readonly changed: boolean;
-  readonly change?: BlockNoteThreadStoreChange<
-    TThreadMetadata,
-    TCommentMetadata
-  >;
+export type ThreadStoreTransition = {
+  readonly status: "applied" | "duplicate" | "stale";
 };
 
 type DeletionReceipt = {
@@ -43,7 +39,7 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
   private completeness: "partial" | "complete";
   private nextCursor: string | undefined;
   private pageGenerationThreadIds: Set<string>;
-  private readonly deletionReceipts = new Map<string, DeletionReceipt>();
+  private currentDeletion: DeletionReceipt | undefined;
   private publicSnapshot: BlockNoteThreadSnapshot<
     TThreadMetadata,
     TCommentMetadata
@@ -68,77 +64,72 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
 
   applyCommit(
     value: BlockNoteThreadStoreCommitReceipt<TThreadMetadata, TCommentMetadata>,
-  ): AppliedChange<TThreadMetadata, TCommentMetadata> {
+  ): ThreadStoreTransition {
     const revision = readThreadStoreRevision(value);
     const comparison = compareThreadStoreRevision(this.revision, revision);
-
-    if (comparison >= 0) {
-      return { changed: false };
+    if (comparison > 0) {
+      return { status: "stale" };
+    }
+    if (comparison === 0) {
+      return { status: "duplicate" };
     }
 
-    const change = normalizeThreadStoreCommitReceipt(value, revision).change;
-
+    const receipt = normalizeThreadStoreCommitReceipt(value, revision);
     const contiguous = revision.sequence === this.revision.sequence + 1;
-    this.garbageCollectOlderDeletionReceipts(revision);
-    this.revision = revision;
-    this.nextCursor = undefined;
-    this.pageGenerationThreadIds = new Set();
-    if (!contiguous) {
-      this.completeness = "partial";
-    }
+    this.beginGeneration(revision, contiguous);
 
-    if (change.type === "delete") {
-      this.threads.delete(change.threadId);
-      this.deletionReceipts.set(
-        change.threadId,
-        Object.freeze({ threadId: change.threadId, revision }),
-      );
+    if (receipt.change.type === "delete") {
+      this.threads.delete(receipt.change.threadId);
+      this.pageGenerationThreadIds.delete(receipt.change.threadId);
+      this.currentDeletion = Object.freeze({
+        threadId: receipt.change.threadId,
+        revision,
+      });
     } else {
-      this.threads.set(change.thread.id, change.thread);
-      this.pageGenerationThreadIds.add(change.thread.id);
-      this.deletionReceipts.delete(change.thread.id);
+      this.threads.set(receipt.change.thread.id, receipt.change.thread);
+      this.pageGenerationThreadIds.add(receipt.change.thread.id);
     }
 
     this.publish();
-    return { changed: true, change };
+    return { status: "applied" };
   }
 
   applySourceSnapshot(
     value: BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata>,
-  ) {
+  ): ThreadStoreTransition {
     const revision = readThreadStoreRevision(value);
     const comparison = compareThreadStoreRevision(this.revision, revision);
-    if (
-      comparison > 0 ||
-      (comparison === 0 && this.completeness === "complete")
-    ) {
-      return false;
-    }
-    if (
-      comparison === 0 &&
-      readThreadSnapshotCompleteness(value) !== "complete"
-    ) {
-      return false;
+    if (comparison > 0) {
+      return { status: "stale" };
     }
 
-    const incoming = normalizeThreadSnapshot(value, revision);
-    this.revision = incoming.revision;
-    this.completeness = incoming.completeness;
-    this.nextCursor = incoming.nextCursor;
-    this.pageGenerationThreadIds = new Set(incoming.threads.keys());
-
-    if (incoming.completeness === "complete") {
-      this.threads = this.withoutCurrentRevisionDeletes(incoming.threads);
-      this.garbageCollectDeletionReceipts(incoming.revision);
-    } else if (comparison < 0) {
-      for (const [threadId, thread] of incoming.threads) {
-        this.threads.set(threadId, thread);
-        this.deletionReceipts.delete(threadId);
+    let knownCompleteness: "partial" | "complete" | undefined;
+    if (comparison === 0) {
+      if (this.completeness === "complete") {
+        return { status: "duplicate" };
+      }
+      knownCompleteness = readThreadSnapshotCompleteness(value);
+      if (knownCompleteness !== "complete") {
+        return { status: "duplicate" };
       }
     }
 
+    const incoming = normalizeThreadSnapshot(
+      value,
+      revision,
+      knownCompleteness,
+    );
+    const deletion = comparison === 0 ? this.currentDeletion : undefined;
+    this.beginGeneration(revision, false);
+    this.threads = new Map(incoming.threads);
+    if (deletion && sameThreadStoreRevision(deletion.revision, revision)) {
+      this.threads.delete(deletion.threadId);
+    }
+    this.completeness = incoming.completeness;
+    this.nextCursor = incoming.nextCursor;
+    this.pageGenerationThreadIds = new Set(this.threads.keys());
     this.publish();
-    return true;
+    return { status: "applied" };
   }
 
   applyPage(
@@ -147,14 +138,14 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
       readonly revision: BlockNoteThreadStoreRevision;
       readonly cursor?: string;
     },
-  ) {
+  ): ThreadStoreTransition {
     const requestedRevision = readThreadStoreRevision(request);
     const responseRevision = readThreadStoreRevision(value);
     if (!sameThreadStoreRevision(requestedRevision, responseRevision)) {
       if (requestedRevision.sequence === responseRevision.sequence) {
         throw threadStoreRevisionConflict(requestedRevision.sequence);
       }
-      return false;
+      return { status: "stale" };
     }
 
     const currentComparison = compareThreadStoreRevision(
@@ -166,72 +157,57 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
       this.completeness === "complete" ||
       this.nextCursor !== request.cursor
     ) {
-      return false;
+      return { status: "stale" };
     }
 
     const page = normalizeThreadSnapshot(value, responseRevision);
+    assertPageProgress(page, request.cursor);
+    const threads = new Map(this.threads);
+    const generationThreadIds = new Set(this.pageGenerationThreadIds);
     for (const [threadId, thread] of page.threads) {
-      const deletion = this.deletionReceipts.get(threadId);
       if (
-        deletion &&
-        sameThreadStoreRevision(deletion.revision, responseRevision)
+        this.currentDeletion?.threadId === threadId &&
+        sameThreadStoreRevision(this.currentDeletion.revision, responseRevision)
       ) {
         continue;
       }
-      this.threads.set(threadId, thread);
-      this.pageGenerationThreadIds.add(threadId);
-      this.deletionReceipts.delete(threadId);
+      threads.set(threadId, thread);
+      generationThreadIds.add(threadId);
     }
 
-    this.completeness = page.completeness;
-    this.nextCursor = page.nextCursor;
     if (page.completeness === "complete") {
-      for (const threadId of this.threads.keys()) {
-        if (!this.pageGenerationThreadIds.has(threadId)) {
-          this.threads.delete(threadId);
+      for (const threadId of threads.keys()) {
+        if (!generationThreadIds.has(threadId)) {
+          threads.delete(threadId);
         }
       }
-      this.garbageCollectDeletionReceipts(page.revision);
+      this.currentDeletion = undefined;
     }
 
+    this.threads = threads;
+    this.pageGenerationThreadIds = generationThreadIds;
+    this.completeness = page.completeness;
+    this.nextCursor = page.nextCursor;
     this.publish();
-    return true;
+    return { status: "applied" };
   }
 
   getDeletionReceiptCountForTesting() {
-    return this.deletionReceipts.size;
+    return this.currentDeletion ? 1 : 0;
   }
 
-  private withoutCurrentRevisionDeletes(
-    incoming: Map<string, Thread<TThreadMetadata, TCommentMetadata>>,
+  private beginGeneration(
+    revision: BlockNoteThreadStoreRevision,
+    retainKnownRows: boolean,
   ) {
-    const next = new Map(incoming);
-    for (const deletion of this.deletionReceipts.values()) {
-      if (sameThreadStoreRevision(deletion.revision, this.revision)) {
-        next.delete(deletion.threadId);
-      }
+    if (!retainKnownRows) {
+      this.threads = new Map();
+      this.completeness = "partial";
     }
-    return next;
-  }
-
-  private garbageCollectDeletionReceipts(
-    authoritativeRevision: BlockNoteThreadStoreRevision,
-  ) {
-    for (const [threadId, receipt] of this.deletionReceipts) {
-      if (receipt.revision.sequence <= authoritativeRevision.sequence) {
-        this.deletionReceipts.delete(threadId);
-      }
-    }
-  }
-
-  private garbageCollectOlderDeletionReceipts(
-    acceptedRevision: BlockNoteThreadStoreRevision,
-  ) {
-    for (const [threadId, receipt] of this.deletionReceipts) {
-      if (receipt.revision.sequence < acceptedRevision.sequence) {
-        this.deletionReceipts.delete(threadId);
-      }
-    }
+    this.revision = revision;
+    this.nextCursor = undefined;
+    this.pageGenerationThreadIds = new Set(this.threads.keys());
+    this.currentDeletion = undefined;
   }
 
   private publish() {
@@ -241,5 +217,27 @@ export class CommittedThreadStoreState<TThreadMetadata, TCommentMetadata> {
       completeness: this.completeness,
       ...(this.nextCursor === undefined ? {} : { nextCursor: this.nextCursor }),
     });
+  }
+}
+
+function assertPageProgress(
+  page: {
+    readonly completeness: "partial" | "complete";
+    readonly nextCursor?: string;
+  },
+  requestCursor: string | undefined,
+) {
+  if (page.completeness === "complete" && page.nextCursor !== undefined) {
+    throw invalidThreadStoreState(
+      "A complete thread page cannot expose a next cursor.",
+    );
+  }
+  if (
+    page.completeness === "partial" &&
+    (page.nextCursor === undefined || page.nextCursor === requestCursor)
+  ) {
+    throw invalidThreadStoreState(
+      "A partial thread page must advance to a new cursor.",
+    );
   }
 }

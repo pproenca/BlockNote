@@ -349,6 +349,56 @@ describe("createThreadStore", () => {
     expect(harness.store.getSnapshot().revision).toEqual(revision(2));
   });
 
+  it("returns exact legacy results without exposing committed state", async () => {
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const created = thread("created", 1);
+    const reply = comment("reply", 2);
+    const withReply = thread("created", 2, {
+      comments: [comment("created-comment", 1), reply],
+    });
+    harness.behavior.createThread = async () =>
+      mutationReceipt(upsertCommit(revision(1), created), created);
+    harness.behavior.addComment = async () =>
+      mutationReceipt(upsertCommit(revision(2), withReply), reply);
+
+    const createResult = await harness.store.createThread({
+      initialComment: { body: [] },
+    });
+    expect(createResult).toBe(created);
+    created.comments.push(comment("external", 3));
+    created.createdAt.setTime(999);
+    (created.comments[0]!.body as Array<{ content: string }>)[0]!.content =
+      "external";
+
+    const committedAfterCreate = harness.store.getThread(created.id)!;
+    expect(committedAfterCreate.comments).toHaveLength(1);
+    expect(committedAfterCreate.createdAt.getTime()).toBe(1);
+    expect(
+      (committedAfterCreate.comments[0]!.body as Array<{ content: string }>)[0]
+        ?.content,
+    ).toBe("created-comment");
+
+    const addResult = await harness.store.addComment({
+      threadId: created.id,
+      comment: { body: [] },
+    });
+    expect(addResult).toBe(reply);
+    (reply.body as Array<{ content: string }>)[0]!.content = "external";
+    reply.reactions.push({
+      emoji: "🔥",
+      createdAt: date(3),
+      userIds: ["external"],
+    });
+
+    const committedReply = harness.store
+      .getThread(created.id)!
+      .comments.find((value) => value.id === reply.id)!;
+    expect(
+      (committedReply.body as Array<{ content: string }>)[0]?.content,
+    ).toBe("reply");
+    expect(committedReply.reactions).toHaveLength(0);
+  });
+
   it("does not resurrect a remote hard delete from a stale page", async () => {
     const target = thread("target", 1);
     const harness = createHarness(
@@ -402,6 +452,7 @@ describe("createThreadStore", () => {
 
     expect(harness.store.getThread("stale")).toBeUndefined();
     expect([...harness.store.getSnapshot().threads.keys()].sort()).toEqual([
+      "first",
       "second",
       "unrelated",
     ]);
@@ -481,6 +532,154 @@ describe("createThreadStore", () => {
         comment: { body: [] },
       }),
     ).rejects.toMatchObject({ code: "invalid-document" });
+  });
+
+  it("rejects mutation receipts not newer than actual operation start", async () => {
+    const target = thread("target", 2);
+
+    const createCase = createHarness(
+      snapshot([target], revision(2), "complete"),
+    );
+    createCase.behavior.createThread = async () =>
+      mutationReceipt(upsertCommit(revision(2), target), target);
+    await expect(
+      createCase.store.createThread({ initialComment: { body: [] } }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+
+    const reply = comment("reply", 3);
+    const withReply = thread(target.id, 3, {
+      comments: [...target.comments, reply],
+    });
+    const addCase = createHarness(snapshot([target], revision(2), "complete"));
+    addCase.behavior.addComment = async () =>
+      mutationReceipt(upsertCommit(revision(1), withReply), reply);
+    await expect(
+      addCase.store.addComment({
+        threadId: target.id,
+        comment: { body: [] },
+      }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+
+    const voidCase = createHarness(snapshot([target], revision(2), "complete"));
+    voidCase.behavior.updateComment = async () =>
+      voidReceipt(upsertCommit(revision(2), target));
+    await expect(
+      voidCase.store.updateComment({
+        threadId: target.id,
+        commentId: target.comments[0]!.id,
+        comment: { body: [] },
+      }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+
+    for (const store of [createCase.store, addCase.store, voidCase.store]) {
+      expect(store.getSnapshot().revision).toEqual(revision(2));
+    }
+  });
+
+  it("accepts a fresh receipt overtaken by a newer source revision", async () => {
+    const initial = thread("initial", 1);
+    const created = thread("created", 2);
+    const newer = thread("newer", 3);
+    const harness = createHarness(snapshot([initial], revision(1), "complete"));
+    const started = deferred<void>();
+    const response =
+      deferred<
+        BlockNoteThreadStoreMutationReceipt<
+          ThreadMetadata,
+          CommentMetadata,
+          ThreadData<ThreadMetadata, CommentMetadata>
+        >
+      >();
+    harness.behavior.createThread = async () => {
+      started.resolve();
+      return response.promise;
+    };
+    const unsubscribe = harness.store.subscribe(() => {});
+
+    const request = harness.store.createThread({
+      initialComment: { body: [] },
+    });
+    await started.promise;
+    harness.emit(upsertCommit(revision(3), newer));
+    response.resolve(
+      mutationReceipt(upsertCommit(revision(2), created), created),
+    );
+
+    await expect(request).resolves.toBe(created);
+    expect(harness.store.getSnapshot().revision).toEqual(revision(3));
+    expect([...harness.store.getSnapshot().threads.keys()]).toEqual([newer.id]);
+    unsubscribe();
+  });
+
+  it("captures queued mutation freshness when each callback starts", async () => {
+    const target = thread("target", 1);
+    const updated = thread("target", 2);
+    const harness = createHarness(snapshot([target], revision(1), "complete"));
+    const started = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    harness.behavior.updateComment = async () => {
+      calls += 1;
+      if (calls === 1) {
+        started.resolve();
+        await release.promise;
+      }
+      return voidReceipt(upsertCommit(revision(2), updated));
+    };
+    const options = {
+      threadId: target.id,
+      commentId: target.comments[0]!.id,
+      comment: { body: [] },
+    };
+
+    const first = harness.store.updateComment(options);
+    const second = harness.store.updateComment(options);
+    await started.promise;
+    expect(calls).toBe(1);
+    release.resolve();
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).rejects.toMatchObject({ code: "invalid-document" });
+    expect(calls).toBe(2);
+    expect(harness.store.getSnapshot().revision).toEqual(revision(2));
+  });
+
+  it("captures changing receipt and result getters exactly once", async () => {
+    const target = thread("target", 1);
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const reads = { revision: 0, change: 0, result: 0, id: 0 };
+    const changingResult = new Proxy(target, {
+      get(value, property, receiver) {
+        if (property === "id") {
+          reads.id += 1;
+          return reads.id === 1 ? target.id : "changed";
+        }
+        return Reflect.get(value, property, receiver);
+      },
+    });
+    const receipt = {
+      get revision() {
+        reads.revision += 1;
+        return revision(1);
+      },
+      get change() {
+        reads.change += 1;
+        return { type: "upsert" as const, thread: target };
+      },
+      get result() {
+        reads.result += 1;
+        return changingResult;
+      },
+    };
+    harness.behavior.createThread = async () => receipt;
+
+    const result = await harness.store.createThread({
+      initialComment: { body: [] },
+    });
+
+    expect(result).toBe(changingResult);
+    expect(reads).toEqual({ revision: 1, change: 1, result: 1, id: 1 });
+    expect(harness.store.getThread(target.id)?.id).toBe(target.id);
   });
 
   it("normalizes hostile mutation receipts before inspecting them", async () => {

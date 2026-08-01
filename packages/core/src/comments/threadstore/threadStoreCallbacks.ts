@@ -72,6 +72,9 @@ type MutationReceipt<
  * Revisions are authoritative and metadata is opaque. Applications must keep
  * each metadata value immutable for the lifetime of the revision that exposes
  * it. The store never enumerates, clones, freezes, compares, or serializes it.
+ * A successful mutation callback must return its authoritative commit at a
+ * revision strictly newer than the snapshot observed when invocation begins.
+ * Source updates may overtake that receipt while the callback is pending.
  */
 export type ThreadStoreCallbacks<
   TThreadMetadata = any,

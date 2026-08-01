@@ -39,10 +39,7 @@ type ReactionTarget = CommentTarget & {
   emoji: string;
 };
 
-const legacyThreadStoreRevision: BlockNoteThreadStoreRevision = Object.freeze({
-  sequence: 0,
-  token: "blocknote:legacy-thread-store",
-});
+let legacyThreadStoreInstanceSequence = 0;
 
 /**
  * Defines the interface to read and mutate threads and comments.
@@ -52,6 +49,8 @@ export abstract class ThreadStore<
   TCommentMetadata = any,
 > {
   public readonly auth: ThreadStoreAuth<TThreadMetadata, TCommentMetadata>;
+  private legacyObservationSequence = 0;
+  private readonly legacyRevisionPrefix = `blocknote:legacy-thread-store:${++legacyThreadStoreInstanceSequence}`;
 
   constructor(auth: ThreadStoreAuth<TThreadMetadata, TCommentMetadata>) {
     this.auth = auth;
@@ -116,10 +115,16 @@ export abstract class ThreadStore<
    * Legacy stores are complete, non-paginated stores by default.
    */
   getSnapshot(): BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata> {
+    const threads = new Map(this.getThreads());
+    const sequence = ++this.legacyObservationSequence;
+    const revision: BlockNoteThreadStoreRevision = Object.freeze({
+      sequence,
+      token: `${this.legacyRevisionPrefix}:${sequence}`,
+    });
     return createPublicThreadSnapshot<TThreadMetadata, TCommentMetadata>({
-      threads: new Map(this.getThreads()),
+      threads,
       completeness: "complete",
-      revision: legacyThreadStoreRevision,
+      revision,
     });
   }
 

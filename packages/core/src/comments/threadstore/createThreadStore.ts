@@ -1,19 +1,16 @@
-import type {
-  BlockNoteThreadSnapshot,
-  CommentData,
-  ThreadData,
-} from "../types.js";
+import type { BlockNoteThreadSnapshot, ThreadData } from "../types.js";
 import { ThreadStore } from "./ThreadStore.js";
 import { CallbackThreadStoreAuth } from "./CallbackThreadStoreAuth.js";
 import { CommittedThreadStoreState } from "./committedThreadStoreState.js";
 import {
   assertAddCommentReceipt,
   assertCreateThreadReceipt,
+  assertThreadStoreCommitIsFresh,
   assertThreadMutationReceipt,
   createThreadStoreIdempotencyPrefix,
-  invalidThreadStoreState,
   sameThreadStoreRevision,
 } from "./threadStoreCommit.js";
+import type { ThreadStoreTransition } from "./committedThreadStoreState.js";
 import type {
   AddCommentOptions,
   CommentTarget,
@@ -68,44 +65,34 @@ class CallbackThreadStore<
   createThread(
     options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
   ) {
-    return this.runMutation(async (idempotencyKey) => {
+    return this.runMutation(async ({ idempotencyKey, startRevision }) => {
       const receipt = await this.callbacks.createThread({
         ...options,
         idempotencyKey,
       });
-      const normalizedReceipt = assertCreateThreadReceipt(receipt);
-      const applied = this.state.applyCommit(normalizedReceipt);
-      this.notify(applied.changed);
-      const change = applied.change ?? normalizedReceipt.change;
-      if (change.type !== "upsert") {
-        throw invalidThreadStoreState("createThread must commit an upsert.");
-      }
-      return change.thread as ThreadData<TThreadMetadata, TCommentMetadata>;
+      const normalized = assertCreateThreadReceipt(receipt);
+      assertThreadStoreCommitIsFresh(
+        normalized.receipt.revision,
+        startRevision,
+      );
+      this.notifyTransition(this.state.applyCommit(normalized.receipt));
+      return normalized.result;
     });
   }
 
   addComment(options: AddCommentOptions<TCommentMetadata>) {
-    return this.runMutation(async (idempotencyKey) => {
+    return this.runMutation(async ({ idempotencyKey, startRevision }) => {
       const receipt = await this.callbacks.addComment({
         ...options,
         idempotencyKey,
       });
       const normalized = assertAddCommentReceipt(receipt, options.threadId);
-      const applied = this.state.applyCommit(normalized.receipt);
-      this.notify(applied.changed);
-      const change = applied.change ?? normalized.receipt.change;
-      if (change.type !== "upsert") {
-        throw invalidThreadStoreState("addComment must commit an upsert.");
-      }
-      const comment = change.thread.comments.find(
-        (candidate) => candidate.id === normalized.commentId,
+      assertThreadStoreCommitIsFresh(
+        normalized.receipt.revision,
+        startRevision,
       );
-      if (!comment) {
-        throw invalidThreadStoreState(
-          "addComment result is absent from its authoritative thread.",
-        );
-      }
-      return comment as CommentData<TCommentMetadata>;
+      this.notifyTransition(this.state.applyCommit(normalized.receipt));
+      return normalized.result;
     });
   }
 
@@ -228,8 +215,7 @@ class CallbackThreadStore<
     }
     const promise = response
       .then((page) => {
-        const changed = this.state.applyPage(page, { cursor, revision });
-        this.notify(changed);
+        this.notifyTransition(this.state.applyPage(page, { cursor, revision }));
         return this.getSnapshot();
       })
       .finally(() => {
@@ -257,11 +243,10 @@ class CallbackThreadStore<
       let unsubscribe: (() => void) | undefined;
       try {
         unsubscribe = this.callbacks.subscribe((commit) => {
-          const applied = this.state.applyCommit(commit);
-          this.notify(applied.changed);
+          this.notifyTransition(this.state.applyCommit(commit));
         });
         this.unsubscribeFromSource = unsubscribe;
-        this.notify(
+        this.notifyTransition(
           this.state.applySourceSnapshot(this.callbacks.getSnapshot()),
         );
       } catch (error) {
@@ -288,28 +273,41 @@ class CallbackThreadStore<
       idempotencyKey: string,
     ) => Promise<ThreadStoreMutationReceipt<TThreadMetadata, TCommentMetadata>>,
   ) {
-    return this.runMutation(async (idempotencyKey) => {
+    return this.runMutation(async ({ idempotencyKey, startRevision }) => {
       const receipt = await callback(idempotencyKey);
       const normalizedReceipt = assertThreadMutationReceipt(
         receipt,
         threadId,
         allowedChange,
       );
-      const applied = this.state.applyCommit(normalizedReceipt);
-      this.notify(applied.changed);
+      assertThreadStoreCommitIsFresh(normalizedReceipt.revision, startRevision);
+      this.notifyTransition(this.state.applyCommit(normalizedReceipt));
     });
   }
 
   private runMutation<TResult>(
-    operation: (idempotencyKey: string) => Promise<TResult>,
+    operation: (context: {
+      readonly idempotencyKey: string;
+      readonly startRevision: BlockNoteThreadSnapshot<
+        TThreadMetadata,
+        TCommentMetadata
+      >["revision"];
+    }) => Promise<TResult>,
   ) {
-    const idempotencyKey = `${this.idempotencyPrefix}:${++this.nextIdempotencySequence}`;
-    const run = this.mutationQueue.then(() => operation(idempotencyKey));
+    const run = this.mutationQueue.then(() => {
+      const startRevision = this.state.getSnapshot().revision;
+      const idempotencyKey = `${this.idempotencyPrefix}:${++this.nextIdempotencySequence}`;
+      return operation({ idempotencyKey, startRevision });
+    });
     this.mutationQueue = run.then(
       () => undefined,
       () => undefined,
     );
     return run;
+  }
+
+  private notifyTransition(transition: ThreadStoreTransition) {
+    this.notify(transition.status === "applied");
   }
 
   private notify(changed: boolean) {

@@ -1,5 +1,6 @@
 import { BlockNoteError } from "../../platform/BlockNoteError.js";
 import type {
+  BlockNoteThread,
   BlockNoteThreadStoreChange,
   BlockNoteThreadStoreCommitReceipt,
   BlockNoteThreadStoreRevision,
@@ -55,33 +56,62 @@ export function normalizeThreadStoreRevision(
 export function normalizeThreadStoreChange<TThreadMetadata, TCommentMetadata>(
   value: BlockNoteThreadStoreChange<TThreadMetadata, TCommentMetadata>,
 ): BlockNoteThreadStoreChange<TThreadMetadata, TCommentMetadata> {
+  let type: unknown;
   try {
-    if (value?.type === "delete") {
-      if (typeof value.threadId !== "string" || value.threadId.length === 0) {
-        throw invalidThreadStoreState(
-          "A deleted thread id must be a non-empty string.",
-        );
-      }
-      return Object.freeze({ type: "delete", threadId: value.threadId });
-    }
-    if (value?.type === "upsert") {
-      return Object.freeze({
-        type: "upsert",
-        thread: cloneThread(value.thread),
-      });
-    }
-    throw invalidThreadStoreState(
-      "A commit change must be an upsert or delete.",
-    );
+    type = value?.type;
   } catch (error) {
-    if (error instanceof BlockNoteError) {
-      throw error;
-    }
     throw invalidThreadStoreState(
       "Thread commit change is not readable.",
       error,
     );
   }
+
+  if (type === "delete") {
+    let threadId: unknown;
+    try {
+      threadId = (
+        value as BlockNoteThreadStoreChange<
+          TThreadMetadata,
+          TCommentMetadata
+        > & {
+          readonly type: "delete";
+        }
+      ).threadId;
+    } catch (error) {
+      throw invalidThreadStoreState(
+        "Deleted thread id is not readable.",
+        error,
+      );
+    }
+    if (typeof threadId !== "string" || threadId.length === 0) {
+      throw invalidThreadStoreState(
+        "A deleted thread id must be a non-empty string.",
+      );
+    }
+    return Object.freeze({ type: "delete", threadId });
+  }
+
+  if (type === "upsert") {
+    let sourceThread: BlockNoteThread<TThreadMetadata, TCommentMetadata>;
+    try {
+      sourceThread = (
+        value as BlockNoteThreadStoreChange<
+          TThreadMetadata,
+          TCommentMetadata
+        > & {
+          readonly type: "upsert";
+        }
+      ).thread;
+    } catch (error) {
+      throw invalidThreadStoreState("Upsert thread is not readable.", error);
+    }
+    return Object.freeze({
+      type: "upsert",
+      thread: cloneThread(sourceThread),
+    });
+  }
+
+  throw invalidThreadStoreState("A commit change must be an upsert or delete.");
 }
 
 export function normalizeThreadStoreCommitReceipt<
@@ -91,36 +121,51 @@ export function normalizeThreadStoreCommitReceipt<
   value: BlockNoteThreadStoreCommitReceipt<TThreadMetadata, TCommentMetadata>,
   knownRevision?: BlockNoteThreadStoreRevision,
 ): BlockNoteThreadStoreCommitReceipt<TThreadMetadata, TCommentMetadata> {
-  try {
-    const revision =
-      knownRevision ?? normalizeThreadStoreRevision(value.revision);
-    const change = normalizeThreadStoreChange(value.change);
-    return Object.freeze({ revision, change });
-  } catch (error) {
-    if (error instanceof BlockNoteError) {
-      throw error;
+  let revision = knownRevision;
+  if (revision === undefined) {
+    let sourceRevision: BlockNoteThreadStoreRevision;
+    try {
+      sourceRevision = value.revision;
+    } catch (error) {
+      throw invalidThreadStoreState(
+        "Thread commit revision is not readable.",
+        error,
+      );
     }
+    revision = normalizeThreadStoreRevision(sourceRevision);
+  }
+
+  let sourceChange: BlockNoteThreadStoreChange<
+    TThreadMetadata,
+    TCommentMetadata
+  >;
+  try {
+    sourceChange = value.change;
+  } catch (error) {
     throw invalidThreadStoreState(
-      "Thread commit receipt is not readable.",
+      "Thread commit change is not readable.",
       error,
     );
   }
+  return Object.freeze({
+    revision,
+    change: normalizeThreadStoreChange(sourceChange),
+  });
 }
 
 export function readThreadStoreRevision(value: {
   readonly revision: BlockNoteThreadStoreRevision;
 }) {
+  let sourceRevision: BlockNoteThreadStoreRevision;
   try {
-    return normalizeThreadStoreRevision(value.revision);
+    sourceRevision = value.revision;
   } catch (error) {
-    if (error instanceof BlockNoteError) {
-      throw error;
-    }
     throw invalidThreadStoreState(
       "Thread store revision is not readable.",
       error,
     );
   }
+  return normalizeThreadStoreRevision(sourceRevision);
 }
 
 export function compareThreadStoreRevision(
@@ -143,6 +188,17 @@ export function sameThreadStoreRevision(
   return left.sequence === right.sequence && left.token === right.token;
 }
 
+export function assertThreadStoreCommitIsFresh(
+  revision: BlockNoteThreadStoreRevision,
+  startRevision: BlockNoteThreadStoreRevision,
+) {
+  if (revision.sequence <= startRevision.sequence) {
+    throw invalidThreadStoreState(
+      "Mutation receipt revision must be strictly newer than its start revision.",
+    );
+  }
+}
+
 export function assertCreateThreadReceipt<TThreadMetadata, TCommentMetadata>(
   receipt: ThreadStoreMutationReceipt<
     TThreadMetadata,
@@ -151,9 +207,10 @@ export function assertCreateThreadReceipt<TThreadMetadata, TCommentMetadata>(
   >,
 ) {
   const normalized = normalizeThreadStoreCommitReceipt(receipt);
+  const result = readMutationResult(receipt, "createThread");
   let resultId: unknown;
   try {
-    resultId = receipt.result?.id;
+    resultId = result?.id;
   } catch (error) {
     throw invalidThreadStoreState(
       "createThread result is not readable.",
@@ -169,7 +226,7 @@ export function assertCreateThreadReceipt<TThreadMetadata, TCommentMetadata>(
       "createThread result must identify its authoritative upsert.",
     );
   }
-  return normalized;
+  return { receipt: normalized, result };
 }
 
 export function assertAddCommentReceipt<TThreadMetadata, TCommentMetadata>(
@@ -181,9 +238,10 @@ export function assertAddCommentReceipt<TThreadMetadata, TCommentMetadata>(
   threadId: string,
 ) {
   const normalized = normalizeThreadStoreCommitReceipt(receipt);
+  const result = readMutationResult(receipt, "addComment");
   let resultId: unknown;
   try {
-    resultId = receipt.result?.id;
+    resultId = result?.id;
   } catch (error) {
     throw invalidThreadStoreState("addComment result is not readable.", error);
   }
@@ -199,7 +257,7 @@ export function assertAddCommentReceipt<TThreadMetadata, TCommentMetadata>(
       "addComment result must identify a comment in its authoritative upsert.",
     );
   }
-  return { receipt: normalized, commentId: resultId };
+  return { receipt: normalized, result };
 }
 
 export function assertThreadMutationReceipt<TThreadMetadata, TCommentMetadata>(
@@ -208,6 +266,10 @@ export function assertThreadMutationReceipt<TThreadMetadata, TCommentMetadata>(
   allowedChange: "upsert" | "upsert-or-delete",
 ) {
   const normalized = normalizeThreadStoreCommitReceipt(receipt);
+  const result = readMutationResult(receipt, "Thread mutation");
+  if (result !== undefined) {
+    throw invalidThreadStoreState("Thread mutation result must be undefined.");
+  }
   const matches =
     normalized.change.type === "upsert"
       ? normalized.change.thread.id === threadId
@@ -219,6 +281,22 @@ export function assertThreadMutationReceipt<TThreadMetadata, TCommentMetadata>(
     );
   }
   return normalized;
+}
+
+function readMutationResult<TResult>(
+  receipt: { readonly result: TResult },
+  operation: string,
+): TResult;
+function readMutationResult(receipt: object, operation: string): unknown;
+function readMutationResult(receipt: object, operation: string) {
+  try {
+    return (receipt as { readonly result?: unknown }).result;
+  } catch (error) {
+    throw invalidThreadStoreState(
+      `${operation} result is not readable.`,
+      error,
+    );
+  }
 }
 
 export function threadStoreRevisionConflict(sequence: number) {

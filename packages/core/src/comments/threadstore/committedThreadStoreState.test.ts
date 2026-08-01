@@ -86,14 +86,14 @@ describe("CommittedThreadStoreState", () => {
       state.applyPage(snapshot([second], activeRevision, "partial", "page-3"), {
         revision: activeRevision,
         cursor: "page-2",
-      }),
-    ).toBe(true);
+      }).status,
+    ).toBe("applied");
     expect(
       state.applyPage(snapshot([third], activeRevision, "complete"), {
         revision: activeRevision,
         cursor: "page-3",
-      }),
-    ).toBe(true);
+      }).status,
+    ).toBe("applied");
 
     expect([...state.getSnapshot().threads.keys()]).toEqual([
       "first",
@@ -115,22 +115,22 @@ describe("CommittedThreadStoreState", () => {
       state.applyCommit({
         revision: revision(1),
         change: { type: "upsert", thread: thread("lower", 1) },
-      }).changed,
-    ).toBe(false);
+      }).status,
+    ).toBe("stale");
     expect(
       state.applyCommit({
         revision: revision(2, "accepted"),
         change: { type: "upsert", thread: equal },
-      }).changed,
-    ).toBe(false);
+      }).status,
+    ).toBe("duplicate");
     expect(state.getSnapshot().threads.has("equal")).toBe(false);
 
     expect(
       state.applyCommit({
         revision: revision(3, "newer"),
         change: { type: "upsert", thread: newer },
-      }).changed,
-    ).toBe(true);
+      }).status,
+    ).toBe("applied");
     expect(state.getSnapshot().threads.has("newer")).toBe(true);
 
     expect(() =>
@@ -140,6 +140,178 @@ describe("CommittedThreadStoreState", () => {
       }),
     ).toThrow(expect.objectContaining({ code: "document-conflict" }));
     expect(state.getSnapshot().revision).toEqual(revision(3, "newer"));
+  });
+
+  it("starts an unknown generation when a commit sequence is missed", () => {
+    const deletedAtMissedRevision = thread("deleted", 1);
+    const retainedWithoutProof = thread("unproven", 1);
+    const unrelated = thread("unrelated", 3);
+    const state = new CommittedThreadStoreState(
+      snapshot(
+        [deletedAtMissedRevision, retainedWithoutProof],
+        revision(1),
+        "complete",
+      ),
+    );
+
+    expect(state.applyCommit(upsert(revision(3), unrelated)).status).toBe(
+      "applied",
+    );
+    expect([...state.getSnapshot().threads.keys()]).toEqual([unrelated.id]);
+    expect(state.getSnapshot().completeness).toBe("partial");
+  });
+
+  it("replaces prior rows with a newer partial source generation", () => {
+    const stale = thread("stale", 1);
+    const current = thread("current", 3);
+    const state = new CommittedThreadStoreState(
+      snapshot([stale], revision(1), "complete"),
+    );
+
+    state.applySourceSnapshot(snapshot([current], revision(3), "partial"));
+
+    expect([...state.getSnapshot().threads.keys()]).toEqual([current.id]);
+    expect(state.getSnapshot()).toMatchObject({
+      completeness: "partial",
+      revision: revision(3),
+    });
+  });
+
+  it("retains proven rows across a contiguous single-change commit", () => {
+    const first = thread("first", 1);
+    const second = thread("second", 2);
+    const state = new CommittedThreadStoreState(
+      snapshot([first], revision(1), "complete"),
+    );
+
+    state.applyCommit(upsert(revision(2), second));
+
+    expect([...state.getSnapshot().threads.keys()]).toEqual([
+      first.id,
+      second.id,
+    ]);
+    expect(state.getSnapshot().completeness).toBe("complete");
+  });
+
+  it("rejects pages that cannot prove progress", () => {
+    const activeRevision = revision(1);
+    const requests = [
+      snapshot([], activeRevision, "partial"),
+      snapshot([], activeRevision, "partial", "page-2"),
+      snapshot([], activeRevision, "complete", "page-3"),
+    ];
+
+    for (const page of requests) {
+      const state = new CommittedThreadStoreState(
+        snapshot([], activeRevision, "partial", "page-2"),
+      );
+      expect(() =>
+        state.applyPage(page, {
+          revision: activeRevision,
+          cursor: "page-2",
+        }),
+      ).toThrow(expect.objectContaining({ code: "invalid-document" }));
+      expect(state.getSnapshot()).toMatchObject({
+        completeness: "partial",
+        nextCursor: "page-2",
+      });
+    }
+  });
+
+  it("captures snapshot and row properties once before normalization", () => {
+    const source = thread("captured", 1);
+    const fieldReads = new Map<PropertyKey, number>();
+    const changingThread = new Proxy(source, {
+      get(target, property, receiver) {
+        const count = (fieldReads.get(property) ?? 0) + 1;
+        fieldReads.set(property, count);
+        if (property === "id" && count > 1) {
+          return "changed";
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const snapshotReads = {
+      completeness: 0,
+      nextCursor: 0,
+      revision: 0,
+      threads: 0,
+    };
+    const changingSnapshot = {
+      get completeness() {
+        snapshotReads.completeness += 1;
+        return "complete" as const;
+      },
+      get nextCursor() {
+        snapshotReads.nextCursor += 1;
+        return undefined;
+      },
+      get revision() {
+        snapshotReads.revision += 1;
+        return revision(1);
+      },
+      get threads() {
+        snapshotReads.threads += 1;
+        return new Map([[source.id, changingThread]]);
+      },
+    };
+
+    const state = new CommittedThreadStoreState(changingSnapshot);
+
+    expect(state.getSnapshot().threads.has(source.id)).toBe(true);
+    expect(snapshotReads).toEqual({
+      completeness: 1,
+      nextCursor: 1,
+      revision: 1,
+      threads: 1,
+    });
+    for (const field of [
+      "type",
+      "id",
+      "createdAt",
+      "updatedAt",
+      "comments",
+      "resolved",
+      "metadata",
+      "resolvedUpdatedAt",
+      "resolvedBy",
+      "deletedAt",
+      "detached",
+    ]) {
+      expect(fieldReads.get(field)).toBe(1);
+    }
+  });
+
+  it("captures commit and change properties once", () => {
+    const state = new CommittedThreadStoreState(
+      snapshot([], revision(0), "complete"),
+    );
+    const target = thread("target", 1);
+    const reads = { revision: 0, change: 0, type: 0, thread: 0 };
+    const change = {
+      get type() {
+        reads.type += 1;
+        return "upsert" as const;
+      },
+      get thread() {
+        reads.thread += 1;
+        return target;
+      },
+    };
+    const receipt = {
+      get revision() {
+        reads.revision += 1;
+        return revision(1);
+      },
+      get change() {
+        reads.change += 1;
+        return change;
+      },
+    };
+
+    state.applyCommit(receipt);
+
+    expect(reads).toEqual({ revision: 1, change: 1, type: 1, thread: 1 });
   });
 
   it("validates revision shape and bounds tokens", () => {
@@ -247,7 +419,7 @@ describe("CommittedThreadStoreState", () => {
           BlockNoteThread<ThreadMetadata, CommentMetadata>
         >
       ).clear(),
-    ).toThrow("immutable");
+    ).toThrow();
     expect(() =>
       (known.comments as CommentData<CommentMetadata>[]).push(
         comment("mutated", 3),
@@ -270,9 +442,9 @@ describe("CommittedThreadStoreState", () => {
       snapshot([deleted, resolved, detached], revision(3)),
     );
 
-    expect(state.getSnapshot().threads.get("deleted")?.deletedAt).toEqual(
-      date(5),
-    );
+    expect(
+      state.getSnapshot().threads.get("deleted")?.deletedAt?.getTime(),
+    ).toBe(5);
     expect(state.getSnapshot().threads.get("resolved")).toMatchObject({
       resolved: true,
     });
@@ -324,8 +496,19 @@ describe("CommittedThreadStoreState", () => {
     );
 
     expect(
-      state.applySourceSnapshot(snapshot([second], revision(2), "complete")),
-    ).toBe(true);
+      state.applySourceSnapshot(snapshot([second], revision(2), "complete"))
+        .status,
+    ).toBe("applied");
     expect([...state.getSnapshot().threads.keys()]).toEqual([second.id]);
   });
 });
+
+function upsert(
+  storeRevision: BlockNoteThreadStoreRevision,
+  value: ThreadData<ThreadMetadata, CommentMetadata>,
+) {
+  return {
+    revision: storeRevision,
+    change: { type: "upsert" as const, thread: value },
+  };
+}
