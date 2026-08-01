@@ -113,7 +113,7 @@ export interface BlockNoteDocumentDefinition<
   readonly id: Id;
   readonly version: Version;
   readonly schema: Schema;
-  readonly extensions: Extensions;
+  readonly extensions: ReadonlyArray<Extensions[number]>;
   readonly metadata: Metadata;
   readonly limits: Limits;
   readonly "~types": BlockNoteDocumentDefinitionTypes<
@@ -191,8 +191,10 @@ export function defineBlockNoteDocument<
   assertBlockNoteIdentifier(options.id, "Document id");
   assertBlockNoteIdentifier(options.version, "Document version");
 
-  const extensions = (options.extensions ?? []) as Extensions;
-  validateBlockNoteDocumentExtensions(extensions);
+  const configuredExtensions = (options.extensions ?? []) as Extensions;
+  const extensions = [
+    ...validateBlockNoteDocumentExtensions(configuredExtensions).values(),
+  ] as Array<Extensions[number]>;
 
   const document = Object.freeze({
     id: options.id,

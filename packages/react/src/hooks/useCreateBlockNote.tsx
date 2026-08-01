@@ -1,6 +1,9 @@
 import {
+  type AnyBlockNoteDocumentDefinition,
   BlockNoteEditor,
+  type BlockNoteEditorFor,
   BlockNoteEditorOptions,
+  type BlockNoteEditorOptionsForDocument,
   CustomBlockNoteSchema,
   DefaultBlockSchema,
   DefaultInlineContentSchema,
@@ -14,15 +17,7 @@ type DirectBlockNoteEditorOptions = Partial<
   readonly document?: never;
 };
 
-/**
- * Hook to instantiate a BlockNote Editor instance in React
- */
-export const useCreateBlockNote = <
-  Options extends DirectBlockNoteEditorOptions | undefined,
->(
-  options: Options = {} as Options,
-  deps: DependencyList = [],
-): Options extends {
+type DirectBlockNoteEditor<Options> = Options extends {
   schema: CustomBlockNoteSchema<infer BSchema, infer ISchema, infer SSchema>;
 }
   ? BlockNoteEditor<BSchema, ISchema, SSchema>
@@ -30,14 +25,38 @@ export const useCreateBlockNote = <
       DefaultBlockSchema,
       DefaultInlineContentSchema,
       DefaultStyleSchema
-    > => {
-  return useMemo(() => {
-    const directOptions: DirectBlockNoteEditorOptions = options ?? {};
-    const editor = BlockNoteEditor.create(directOptions) as any;
-    if (window) {
-      // for testing / dev purposes
-      (window as any).ProseMirror = editor._tiptapEditor;
-    }
-    return editor;
-  }, deps); //eslint-disable-line react-hooks/exhaustive-deps
-};
+    >;
+
+/**
+ * Synchronously creates and memoizes a BlockNote editor. This legacy hook does
+ * not own editor disposal; use an owned session lifecycle when disposal must be
+ * managed automatically.
+ */
+export function useCreateBlockNote<
+  const Document extends AnyBlockNoteDocumentDefinition,
+>(
+  options: BlockNoteEditorOptionsForDocument<Document>,
+  deps?: DependencyList,
+): BlockNoteEditorFor<Document>;
+export function useCreateBlockNote<
+  Options extends DirectBlockNoteEditorOptions,
+>(options: Options, deps?: DependencyList): DirectBlockNoteEditor<Options>;
+export function useCreateBlockNote(
+  options?: undefined,
+  deps?: DependencyList,
+): BlockNoteEditor<
+  DefaultBlockSchema,
+  DefaultInlineContentSchema,
+  DefaultStyleSchema
+>;
+export function useCreateBlockNote(
+  options:
+    | DirectBlockNoteEditorOptions
+    | BlockNoteEditorOptionsForDocument<AnyBlockNoteDocumentDefinition> = {},
+  deps: DependencyList = [],
+) {
+  return useMemo(
+    () => BlockNoteEditor.create(options as any),
+    deps, //eslint-disable-line react-hooks/exhaustive-deps
+  );
+}
