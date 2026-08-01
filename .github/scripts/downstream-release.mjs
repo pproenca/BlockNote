@@ -1,4 +1,10 @@
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -231,6 +237,250 @@ export async function getPackedArtifactIntegrity(file) {
   return `sha512-${digest}`;
 }
 
+function consumerTarballPath(artifactDirectory, packageDefinition, release) {
+  return path.resolve(
+    artifactDirectory,
+    tarballName(packageDefinition.downstreamName, release.downstreamVersion),
+  );
+}
+
+function createConsumerRuntimeProbe(release) {
+  const expectedExports = {
+    "@blocknote/core": ["BlockNoteSchema", "createBlockNoteDocument"],
+    "@blocknote/react": ["createReactBlockSpec"],
+    "@blocknote/server-util": ["ServerBlockNoteEditor"],
+  };
+
+  return `
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+if ("window" in globalThis || "document" in globalThis) {
+  throw new Error("Downstream consumer started with browser globals");
+}
+
+const packages = ${JSON.stringify(
+    downstreamPackages.map(({ upstreamName, downstreamName }) => ({
+      upstreamName,
+      downstreamName,
+      version: release.downstreamVersion,
+    })),
+  )};
+const expectedExports = ${JSON.stringify(expectedExports)};
+
+for (const packageDefinition of packages) {
+  const resolvedPath = fileURLToPath(import.meta.resolve(packageDefinition.upstreamName));
+  const parts = resolvedPath.split(path.sep);
+
+  if (!parts.includes("node_modules") || parts.includes("packages")) {
+    throw new Error(packageDefinition.upstreamName + " resolved outside the installed consumer: " + resolvedPath);
+  }
+
+  const imported = await import(packageDefinition.upstreamName);
+  for (const exportName of expectedExports[packageDefinition.upstreamName] ?? []) {
+    if (!(exportName in imported)) {
+      throw new Error(packageDefinition.upstreamName + " is missing export " + exportName);
+    }
+  }
+}
+
+if ("window" in globalThis || "document" in globalThis) {
+  throw new Error("Downstream imports created browser globals");
+}
+`;
+}
+
+function createConsumerTypeProbe() {
+  return `${downstreamPackages
+    .map(
+      ({ upstreamName }, index) =>
+        `import * as package_${index} from ${JSON.stringify(upstreamName)};`,
+    )
+    .join("\n")}\n\nvoid [${downstreamPackages
+    .map((_, index) => `package_${index}`)
+    .join(", ")}];\n`;
+}
+
+export async function createDownstreamConsumer({
+  root,
+  artifactDirectory,
+  consumerDirectory,
+  release,
+}) {
+  await validatePackedArtifacts({
+    artifactDirectory,
+    release,
+    prepared: true,
+  });
+  const records = await validateDownstreamManifests({
+    root,
+    release,
+    prepared: true,
+  });
+  const internalNames = new Set(
+    downstreamPackages.flatMap(({ upstreamName, downstreamName }) => [
+      upstreamName,
+      downstreamName,
+    ]),
+  );
+  const dependencies = {};
+  const overrides = {};
+
+  for (const { manifest, packageDefinition } of records) {
+    const tarball = consumerTarballPath(
+      artifactDirectory,
+      packageDefinition,
+      release,
+    );
+    const fileDependency = `file:${tarball}`;
+    dependencies[packageDefinition.upstreamName] = fileDependency;
+    overrides[packageDefinition.upstreamName] = fileDependency;
+
+    for (const [peerName, peerVersion] of Object.entries(
+      manifest.peerDependencies ?? {},
+    )) {
+      if (!internalNames.has(peerName) && !(peerName in dependencies)) {
+        dependencies[peerName] = peerVersion;
+      }
+    }
+  }
+
+  await mkdir(consumerDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(consumerDirectory, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "blocknote-downstream-consumer",
+          private: true,
+          type: "module",
+          dependencies,
+          pnpm: { overrides },
+        },
+        null,
+        2,
+      )}\n`,
+    ),
+    writeFile(
+      path.join(consumerDirectory, "runtime.mjs"),
+      createConsumerRuntimeProbe(release),
+    ),
+    writeFile(
+      path.join(consumerDirectory, "contract.mts"),
+      createConsumerTypeProbe(),
+    ),
+    writeFile(
+      path.join(consumerDirectory, "tsconfig.json"),
+      `${JSON.stringify(
+        {
+          compilerOptions: {
+            lib: ["ESNext", "DOM", "DOM.Iterable"],
+            module: "ESNext",
+            moduleResolution: "Bundler",
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: "ESNext",
+          },
+          include: ["contract.mts"],
+        },
+        null,
+        2,
+      )}\n`,
+    ),
+  ]);
+}
+
+async function collectInstalledBlockNotePackages(directory, result = []) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === ".bin") {
+      continue;
+    }
+
+    const child = path.join(directory, entry.name);
+    const manifestFile = path.join(child, "package.json");
+
+    try {
+      const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+      if (
+        typeof manifest.name === "string" &&
+        (manifest.name.startsWith("@blocknote/") ||
+          manifest.name.startsWith("@pproenca/blocknote-"))
+      ) {
+        result.push({
+          directory: await realpath(child),
+          name: manifest.name,
+          version: manifest.version,
+        });
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    await collectInstalledBlockNotePackages(child, result);
+  }
+
+  return result;
+}
+
+export async function validateDownstreamConsumer({
+  consumerDirectory,
+  release,
+}) {
+  const nodeModules = path.join(consumerDirectory, "node_modules");
+  const consumerRoot = `${await realpath(consumerDirectory)}${path.sep}`;
+  const installed = await collectInstalledBlockNotePackages(nodeModules);
+
+  for (const packageDefinition of downstreamPackages) {
+    const aliasDirectory = path.join(
+      nodeModules,
+      ...packageDefinition.upstreamName.split("/"),
+    );
+    const resolvedAlias = await realpath(aliasDirectory);
+    const manifest = JSON.parse(
+      await readFile(path.join(aliasDirectory, "package.json"), "utf8"),
+    );
+
+    if (!resolvedAlias.startsWith(consumerRoot)) {
+      throw new Error(
+        `${packageDefinition.upstreamName} resolved outside the consumer: ${resolvedAlias}`,
+      );
+    }
+    if (
+      manifest.name !== packageDefinition.downstreamName ||
+      manifest.version !== release.downstreamVersion
+    ) {
+      throw new Error(
+        `${packageDefinition.upstreamName} must alias ${packageDefinition.downstreamName}@${release.downstreamVersion}`,
+      );
+    }
+
+    const physicalCopies = new Set(
+      installed
+        .filter(({ name }) => name === packageDefinition.downstreamName)
+        .map(({ directory }) => directory),
+    );
+    if (physicalCopies.size !== 1 || !physicalCopies.has(resolvedAlias)) {
+      throw new Error(
+        `${packageDefinition.downstreamName} must have one installed copy; found ${physicalCopies.size}`,
+      );
+    }
+  }
+
+  const upstreamCopies = installed.filter(({ name }) =>
+    downstreamPackages.some(({ upstreamName }) => upstreamName === name),
+  );
+  if (upstreamCopies.length > 0) {
+    throw new Error(
+      `Consumer installed upstream BlockNote packages: ${upstreamCopies
+        .map(({ name, version }) => `${name}@${version}`)
+        .join(", ")}`,
+    );
+  }
+}
+
 async function main() {
   const [command, tag, ...arguments_] = process.argv.slice(2);
   const release = parseDownstreamReleaseTag(tag);
@@ -272,6 +522,36 @@ async function main() {
       process.stdout.write(
         await getPackedArtifactIntegrity(path.resolve(root, file)),
       );
+      return;
+    }
+    case "create-consumer": {
+      const [artifactDirectory, consumerDirectory] = arguments_;
+
+      if (!artifactDirectory || !consumerDirectory) {
+        throw new Error(
+          "create-consumer requires artifact and consumer directories",
+        );
+      }
+
+      await createDownstreamConsumer({
+        root,
+        artifactDirectory: path.resolve(root, artifactDirectory),
+        consumerDirectory: path.resolve(root, consumerDirectory),
+        release,
+      });
+      return;
+    }
+    case "verify-consumer": {
+      const [consumerDirectory] = arguments_;
+
+      if (!consumerDirectory) {
+        throw new Error("verify-consumer requires a consumer directory");
+      }
+
+      await validateDownstreamConsumer({
+        consumerDirectory: path.resolve(root, consumerDirectory),
+        release,
+      });
       return;
     }
     default:

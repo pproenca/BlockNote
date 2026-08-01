@@ -26,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
@@ -46,6 +47,9 @@ jobs:
         run: |
           node --test .github/scripts/downstream-release.test.mjs
           node .github/scripts/downstream-release.mjs validate "$RELEASE_TAG"
+
+      - name: Verify tagged commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - name: Typecheck
         run: |
@@ -127,13 +131,22 @@ jobs:
           node .github/scripts/downstream-release.mjs verify-artifacts
           "$RELEASE_TAG" artifacts/npm downstream
 
+      - name: Test downstream package set
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          consumer_dir=$(mktemp -d)
+          node .github/scripts/downstream-release.mjs create-consumer "$RELEASE_TAG" artifacts/npm "$consumer_dir"
+          pnpm --dir "$consumer_dir" install --lockfile=false --ignore-scripts --prefer-offline
+          node .github/scripts/downstream-release.mjs verify-consumer "$RELEASE_TAG" "$consumer_dir"
+          node "$consumer_dir/runtime.mjs"
+          node_modules/.bin/tsc --project "$consumer_dir/tsconfig.json"
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           registry-url: "https://registry.npmjs.org"
 
-      - name: Publish downstream packages
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Require an unused package version set
         run: |
           for package_dir in \
             packages/core \
@@ -144,22 +157,25 @@ jobs:
             packages/test-utils; do
             package_name=$(node -p "require('./$package_dir/package.json').name")
             package_version=$(node -p "require('./$package_dir/package.json').version")
-            tarball_name=$(node -p "const p=require('./$package_dir/package.json'); p.name.slice(1).replace('/', '-') + '-' + p.version + '.tgz'")
-            tarball_path="artifacts/npm/$tarball_name"
-            local_integrity=$(node .github/scripts/downstream-release.mjs integrity "$RELEASE_TAG" "$tarball_path")
             published_version=$(npm view "$package_name@$package_version" version 2>/dev/null || true)
-            published_integrity=$(npm view "$package_name@$package_version" dist.integrity 2>/dev/null || true)
 
-            if [ "$published_version" = "$package_version" ] && [ "$published_integrity" = "$local_integrity" ]; then
-              echo "$package_name@$package_version already exists; skipping"
-              continue
-            fi
-
-            if [ -n "$published_version" ] || [ -n "$published_integrity" ]; then
-              echo "$package_name@$package_version exists with unexpected metadata" >&2
+            if [ -n "$published_version" ]; then
+              echo "$package_name@$package_version already exists; use a new downstream revision" >&2
               exit 1
             fi
+          done
 
+      - name: Publish downstream packages
+        run: |
+          for package_dir in \
+            packages/core \
+            packages/collaboration \
+            packages/collaboration-server \
+            packages/react \
+            packages/server-util \
+            packages/test-utils; do
+            tarball_name=$(node -p "const p=require('./$package_dir/package.json'); p.name.slice(1).replace('/', '-') + '-' + p.version + '.tgz'")
+            tarball_path="artifacts/npm/$tarball_name"
             npm publish "$tarball_path" --access public --tag pf --provenance
           done
 
