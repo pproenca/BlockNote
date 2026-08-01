@@ -49,6 +49,15 @@ export default defineConfig({
       // make sure to externalize deps that shouldn't be bundled
       // into your library
       external: (source) => {
+        // This package is patched in the fork. Bundle the patched runtime so
+        // published BlockNote packages never depend on a consumer-side patch.
+        if (
+          source === "@y/prosemirror" ||
+          source.startsWith("@y/prosemirror/")
+        ) {
+          return false;
+        }
+
         if (
           Object.keys({
             ...pkg.dependencies,
