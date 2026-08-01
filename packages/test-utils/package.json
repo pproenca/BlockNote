@@ -1,0 +1,56 @@
+{
+  "name": "@blocknote/test-utils",
+  "homepage": "https://github.com/TypeCellOS/BlockNote",
+  "private": false,
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TypeCellOS/BlockNote.git",
+    "directory": "packages/test-utils"
+  },
+  "license": "MPL-2.0",
+  "version": "0.52.1",
+  "files": [
+    "dist",
+    "types",
+    "src"
+  ],
+  "keywords": [
+    "blocknote",
+    "testing",
+    "typescript"
+  ],
+  "description": "Public adapter contract suites and behavior fixtures for BlockNote.",
+  "type": "module",
+  "source": "src/index.ts",
+  "types": "./types/src/index.d.ts",
+  "main": "./dist/blocknote-test-utils.cjs",
+  "module": "./dist/blocknote-test-utils.js",
+  "exports": {
+    ".": {
+      "types": "./types/src/index.d.ts",
+      "import": "./dist/blocknote-test-utils.js",
+      "require": "./dist/blocknote-test-utils.cjs"
+    }
+  },
+  "scripts": {
+    "dev": "vp dev",
+    "lint": "vp lint src",
+    "test": "vp test --run --passWithNoTests",
+    "test-watch": "vp test watch",
+    "clean": "rimraf dist && rimraf types"
+  },
+  "devDependencies": {
+    "@blocknote/collaboration": "workspace:^",
+    "@blocknote/collaboration-server": "workspace:^",
+    "@blocknote/core": "workspace:^",
+    "rimraf": "^5.0.10",
+    "typescript": "^5.9.3",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "@blocknote/collaboration": "^0.52.1",
+    "@blocknote/collaboration-server": "^0.52.1",
+    "@blocknote/core": "^0.52.1"
+  }
+}

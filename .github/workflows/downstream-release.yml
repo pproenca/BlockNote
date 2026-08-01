@@ -7,14 +7,18 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: downstream-release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   release:
-    name: Build downstream packages
+    name: Verify and publish downstream package set
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: write
       id-token: write
@@ -34,72 +38,163 @@ jobs:
           version: 11.8.0
 
       - name: Install dependencies
-        run: vp install
+        run: vp install --frozen-lockfile
+
+      - name: Validate release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --test .github/scripts/downstream-release.test.mjs
+          node .github/scripts/downstream-release.mjs validate "$RELEASE_TAG"
+
+      - name: Typecheck
+        run: |
+          pnpm typecheck
+
+      - name: Build lint prerequisites
+        run: |
+          vp run --filter @blocknote/core build
+          vp run --filter @blocknote/react build
+          vp run --filter @blocknote/mantine build
+
+      - name: Lint
+        run: |
+          vp lint --type-aware
+
+      - name: Test packages
+        run: |
+          vp run --filter @blocknote/core test
+          vp run --filter @blocknote/collaboration test
+          vp run --filter @blocknote/collaboration-server test
+          vp run --filter @blocknote/react test
+          vp run --filter @blocknote/server-util test
+          vp run --filter @blocknote/test-utils test
+          cd tests
+          NEXTJS_TEST_MODE=build vp test run src/unit/nextjs/serverUtil.test.ts
 
       - name: Build packages
         run: |
           vp run --filter @blocknote/core build
+          vp run --filter @blocknote/collaboration build
+          vp run --filter @blocknote/collaboration-server build
           vp run --filter @blocknote/react build
           vp run --filter @blocknote/server-util build
+          vp run --filter @blocknote/test-utils build
 
-      - name: Pack packages
+      - name: Pack upstream packages
         run: |
           mkdir -p artifacts/github artifacts/npm
-          pnpm --dir packages/core pack --pack-destination ../../artifacts/github
-          pnpm --dir packages/react pack --pack-destination ../../artifacts/github
-          pnpm --dir packages/server-util pack --pack-destination ../../artifacts/github
+          for package_dir in \
+            packages/core \
+            packages/collaboration \
+            packages/collaboration-server \
+            packages/react \
+            packages/server-util \
+            packages/test-utils; do
+            pnpm --dir "$package_dir" pack --pack-destination ../../artifacts/github
+          done
 
-      - name: Prepare downstream npm packages
+      - name: Verify upstream package set
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          node .github/scripts/downstream-release.mjs verify-artifacts
+          "$RELEASE_TAG" artifacts/github upstream
+
+      - name: Prepare downstream package set
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          RELEASE_VERSION="${RELEASE_TAG#pf-v}"
-          UPSTREAM_VERSION="${RELEASE_VERSION%.*}"
-          DOWNSTREAM_REVISION="${RELEASE_VERSION##*.}"
-          PACKAGE_VERSION="${UPSTREAM_VERSION}-pf.${DOWNSTREAM_REVISION}"
+          node .github/scripts/downstream-release.mjs prepare "$RELEASE_TAG"
+          node .github/scripts/downstream-release.mjs verify "$RELEASE_TAG"
 
-          pnpm --dir packages/core pkg set \
-            name=@pproenca/blocknote-core \
-            version="$PACKAGE_VERSION" \
-            homepage=https://github.com/pproenca/BlockNote \
-            repository.url=git+https://github.com/pproenca/BlockNote.git
-          pnpm --dir packages/core pkg delete gitHead
-          pnpm --dir packages/react pkg set \
-            name=@pproenca/blocknote-react \
-            version="$PACKAGE_VERSION" \
-            homepage=https://github.com/pproenca/BlockNote \
-            repository.url=git+https://github.com/pproenca/BlockNote.git \
-            "peerDependencies[\"@blocknote/core\"]=$PACKAGE_VERSION"
-          pnpm --dir packages/react pkg delete gitHead
-          pnpm --dir packages/server-util pkg set \
-            name=@pproenca/blocknote-server-util \
-            version="$PACKAGE_VERSION" \
-            homepage=https://github.com/pproenca/BlockNote \
-            repository.url=git+https://github.com/pproenca/BlockNote.git \
-            "peerDependencies[\"@blocknote/core\"]=$PACKAGE_VERSION" \
-            "peerDependencies[\"@blocknote/react\"]=$PACKAGE_VERSION"
-          pnpm --dir packages/server-util pkg delete gitHead
+      - name: Pack downstream packages
+        run: |
+          for package_dir in \
+            packages/core \
+            packages/collaboration \
+            packages/collaboration-server \
+            packages/react \
+            packages/server-util \
+            packages/test-utils; do
+            pnpm --dir "$package_dir" pack --pack-destination ../../artifacts/npm
+          done
 
-          pnpm --dir packages/core pack --pack-destination ../../artifacts/npm
-          pnpm --dir packages/react pack --pack-destination ../../artifacts/npm
-          pnpm --dir packages/server-util pack --pack-destination ../../artifacts/npm
+      - name: Verify downstream package set
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          node .github/scripts/downstream-release.mjs verify-artifacts
+          "$RELEASE_TAG" artifacts/npm downstream
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish downstream packages
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          for package_dir in packages/core packages/react packages/server-util; do
+          for package_dir in \
+            packages/core \
+            packages/collaboration \
+            packages/collaboration-server \
+            packages/react \
+            packages/server-util \
+            packages/test-utils; do
             package_name=$(node -p "require('./$package_dir/package.json').name")
             package_version=$(node -p "require('./$package_dir/package.json').version")
+            tarball_name=$(node -p "const p=require('./$package_dir/package.json'); p.name.slice(1).replace('/', '-') + '-' + p.version + '.tgz'")
+            tarball_path="artifacts/npm/$tarball_name"
+            local_integrity=$(node .github/scripts/downstream-release.mjs integrity "$RELEASE_TAG" "$tarball_path")
+            published_version=$(npm view "$package_name@$package_version" version 2>/dev/null || true)
+            published_integrity=$(npm view "$package_name@$package_version" dist.integrity 2>/dev/null || true)
 
-            if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
+            if [ "$published_version" = "$package_version" ] && [ "$published_integrity" = "$local_integrity" ]; then
               echo "$package_name@$package_version already exists; skipping"
               continue
             fi
 
-            (cd "$package_dir" && npm publish --access public --tag pf --provenance)
+            if [ -n "$published_version" ] || [ -n "$published_integrity" ]; then
+              echo "$package_name@$package_version exists with unexpected metadata" >&2
+              exit 1
+            fi
+
+            npm publish "$tarball_path" --access public --tag pf --provenance
+          done
+
+      - name: Verify published package set
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for package_dir in \
+            packages/core \
+            packages/collaboration \
+            packages/collaboration-server \
+            packages/react \
+            packages/server-util \
+            packages/test-utils; do
+            package_name=$(node -p "require('./$package_dir/package.json').name")
+            package_version=$(node -p "require('./$package_dir/package.json').version")
+            tarball_name=$(node -p "const p=require('./$package_dir/package.json'); p.name.slice(1).replace('/', '-') + '-' + p.version + '.tgz'")
+            local_integrity=$(node .github/scripts/downstream-release.mjs integrity "$RELEASE_TAG" "artifacts/npm/$tarball_name")
+            published_version=""
+            published_integrity=""
+
+            for attempt in 1 2 3 4 5 6; do
+              echo "Registry verification attempt $attempt for $package_name@$package_version"
+              published_version=$(npm view "$package_name@$package_version" version 2>/dev/null || true)
+              published_integrity=$(npm view "$package_name@$package_version" dist.integrity 2>/dev/null || true)
+
+              if [ "$published_version" = "$package_version" ] && [ "$published_integrity" = "$local_integrity" ]; then
+                break
+              fi
+
+              sleep 5
+            done
+
+            test "$published_version" = "$package_version"
+            test "$published_integrity" = "$local_integrity"
           done
 
       - name: Create release
