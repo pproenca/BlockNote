@@ -25,7 +25,10 @@ export class ExtensionLifecycle {
     }
 
     this.abort(extension);
-    const abortController = new AbortController();
+    const document = (context.root.ownerDocument ?? context.root) as Document;
+    const abortController = document.defaultView
+      ? new document.defaultView.AbortController()
+      : new globalThis.AbortController();
     this.abortControllers.set(extension, abortController);
     try {
       const cleanup = extension.mount({
