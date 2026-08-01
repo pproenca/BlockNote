@@ -164,6 +164,10 @@ await test("creates one hermetic Product-style downstream consumer", async () =>
   const manifest = JSON.parse(
     await readFile(path.join(consumerDirectory, "package.json"), "utf8"),
   );
+  const workspace = await readFile(
+    path.join(consumerDirectory, "pnpm-workspace.yaml"),
+    "utf8",
+  );
 
   assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
     "@blocknote/collaboration",
@@ -177,8 +181,8 @@ await test("creates one hermetic Product-style downstream consumer", async () =>
     manifest.dependencies["@blocknote/core"],
     /pproenca-blocknote-core-0\.52\.1-pf\.7\.tgz$/,
   );
-  assert.equal(
-    manifest.pnpm.overrides["@blocknote/core"],
-    manifest.dependencies["@blocknote/core"],
+  assert.match(
+    workspace,
+    /"@blocknote\/core": "file:.*pproenca-blocknote-core-0\.52\.1-pf\.7\.tgz"/,
   );
 });

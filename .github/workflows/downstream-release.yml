@@ -121,7 +121,7 @@ jobs:
             packages/react \
             packages/server-util \
             packages/test-utils; do
-            pnpm --dir "$package_dir" pack --pack-destination ../../artifacts/npm
+            npm pack "./$package_dir" --pack-destination artifacts/npm --ignore-scripts
           done
 
       - name: Verify downstream package set
