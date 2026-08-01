@@ -127,16 +127,96 @@ export type ThreadData<TThreadMetadata = any, TCommentMetadata = any> = {
 /**
  * A comment with application-defined metadata.
  */
-export type BlockNoteComment<TCommentMetadata = any> =
-  CommentData<TCommentMetadata>;
+export type BlockNoteCommentReaction = {
+  readonly emoji: string;
+  readonly createdAt: Date;
+  readonly userIds: readonly string[];
+};
+
+/** A readonly comment exposed by a thread-store snapshot. */
+export type BlockNoteComment<TCommentMetadata = any> = {
+  readonly type: "comment";
+  readonly id: string;
+  readonly userId: string;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly reactions: readonly BlockNoteCommentReaction[];
+  readonly metadata: TCommentMetadata;
+} & (
+  | {
+      readonly deletedAt: Date;
+      readonly body: undefined;
+    }
+  | {
+      readonly deletedAt?: never;
+      readonly body: CommentBody;
+    }
+);
 
 /**
  * A thread with application-defined thread and comment metadata.
  */
-export type BlockNoteThread<
+export type BlockNoteThread<TThreadMetadata = any, TCommentMetadata = any> = {
+  readonly type: "thread";
+  readonly id: string;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly comments: readonly BlockNoteComment<TCommentMetadata>[];
+  readonly resolved: boolean;
+  readonly resolvedUpdatedAt?: Date;
+  readonly resolvedBy?: string;
+  readonly metadata: TThreadMetadata;
+  readonly deletedAt?: Date;
+  readonly detached?: boolean;
+};
+
+/**
+ * Identifies one authoritative committed state of a thread store.
+ *
+ * A sequence is monotonic within a store. A token uniquely identifies the
+ * commit at that sequence so split-brain revisions fail instead of being
+ * resolved from application metadata.
+ */
+export interface BlockNoteThreadStoreRevision {
+  readonly sequence: number;
+  readonly token: string;
+}
+
+/** One authoritative thread change committed at a store revision. */
+export type BlockNoteThreadStoreChange<
   TThreadMetadata = any,
   TCommentMetadata = any,
-> = ThreadData<TThreadMetadata, TCommentMetadata>;
+> =
+  | {
+      readonly type: "upsert";
+      readonly thread: BlockNoteThread<TThreadMetadata, TCommentMetadata>;
+    }
+  | {
+      readonly type: "delete";
+      readonly threadId: string;
+    };
+
+/** A source event proving an authoritative change was committed. */
+export interface BlockNoteThreadStoreCommitReceipt<
+  TThreadMetadata = any,
+  TCommentMetadata = any,
+> {
+  readonly revision: BlockNoteThreadStoreRevision;
+  readonly change: BlockNoteThreadStoreChange<
+    TThreadMetadata,
+    TCommentMetadata
+  >;
+}
+
+/** A committed mutation plus the legacy ThreadStore result to unwrap. */
+export type BlockNoteThreadStoreMutationReceipt<
+  TThreadMetadata = any,
+  TCommentMetadata = any,
+  TResult = void,
+> = BlockNoteThreadStoreCommitReceipt<TThreadMetadata, TCommentMetadata> &
+  ([TResult] extends [void]
+    ? { readonly result?: undefined }
+    : { readonly result: TResult });
 
 /**
  * A stable view of the threads currently known to a thread store.
@@ -153,4 +233,6 @@ export interface BlockNoteThreadSnapshot<
   >;
   readonly completeness: "partial" | "complete";
   readonly nextCursor?: string;
+  /** The authoritative revision to which every row and cursor belongs. */
+  readonly revision: BlockNoteThreadStoreRevision;
 }

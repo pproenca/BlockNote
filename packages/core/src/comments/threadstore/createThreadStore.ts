@@ -1,119 +1,31 @@
 import type {
   BlockNoteThreadSnapshot,
-  CommentBody,
   CommentData,
   ThreadData,
 } from "../types.js";
 import { ThreadStore } from "./ThreadStore.js";
-import { ThreadStoreAuth } from "./ThreadStoreAuth.js";
+import { CallbackThreadStoreAuth } from "./CallbackThreadStoreAuth.js";
+import { CommittedThreadStoreState } from "./committedThreadStoreState.js";
 import {
-  latestDate,
-  ThreadSnapshotReconciler,
-} from "./threadStoreReconciliation.js";
+  assertAddCommentReceipt,
+  assertCreateThreadReceipt,
+  assertThreadMutationReceipt,
+  createThreadStoreIdempotencyPrefix,
+  invalidThreadStoreState,
+  sameThreadStoreRevision,
+} from "./threadStoreCommit.js";
+import type {
+  AddCommentOptions,
+  CommentTarget,
+  CreateThreadOptions,
+  ReactionTarget,
+  ThreadStoreCallbacks,
+  ThreadStoreLoadRequest,
+  ThreadStoreMutationReceipt,
+  UpdateCommentOptions,
+} from "./threadStoreCallbacks.js";
 
-type CreateThreadOptions<TThreadMetadata, TCommentMetadata> = {
-  initialComment: {
-    body: CommentBody;
-    metadata?: TCommentMetadata;
-  };
-  metadata?: TThreadMetadata;
-};
-
-type AddCommentOptions<TCommentMetadata> = {
-  comment: {
-    body: CommentBody;
-    metadata?: TCommentMetadata;
-  };
-  threadId: string;
-};
-
-type UpdateCommentOptions<TCommentMetadata> =
-  AddCommentOptions<TCommentMetadata> & {
-    commentId: string;
-  };
-
-type CommentTarget = {
-  threadId: string;
-  commentId: string;
-};
-
-type ReactionTarget = CommentTarget & {
-  emoji: string;
-};
-
-/**
- * Application callbacks used by {@link createThreadStore}.
- */
-export type ThreadStoreCallbacks<
-  TThreadMetadata = any,
-  TCommentMetadata = any,
-> = {
-  readonly auth?: ThreadStoreAuth<TThreadMetadata, TCommentMetadata>;
-  readonly getSnapshot: () => BlockNoteThreadSnapshot<
-    TThreadMetadata,
-    TCommentMetadata
-  >;
-  readonly subscribe: (listener: () => void) => () => void;
-  readonly loadMore: (
-    cursor?: string,
-  ) => Promise<BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata>>;
-  readonly createThread: (
-    options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
-  ) => Promise<ThreadData<TThreadMetadata, TCommentMetadata>>;
-  readonly addComment: (
-    options: AddCommentOptions<TCommentMetadata>,
-  ) => Promise<CommentData<TCommentMetadata>>;
-  readonly updateComment: (
-    options: UpdateCommentOptions<TCommentMetadata>,
-  ) => Promise<void>;
-  readonly deleteComment: (options: CommentTarget) => Promise<void>;
-  readonly deleteThread: (options: { threadId: string }) => Promise<void>;
-  readonly resolveThread: (options: { threadId: string }) => Promise<void>;
-  readonly reopenThread: (options: { threadId: string }) => Promise<void>;
-  readonly addReaction: (options: ReactionTarget) => Promise<void>;
-  readonly deleteReaction: (options: ReactionTarget) => Promise<void>;
-};
-
-class CallbackThreadStoreAuth<
-  TThreadMetadata,
-  TCommentMetadata,
-> extends ThreadStoreAuth<TThreadMetadata, TCommentMetadata> {
-  canCreateThread() {
-    return true;
-  }
-
-  canAddComment() {
-    return true;
-  }
-
-  canUpdateComment() {
-    return true;
-  }
-
-  canDeleteComment() {
-    return true;
-  }
-
-  canDeleteThread() {
-    return true;
-  }
-
-  canResolveThread() {
-    return true;
-  }
-
-  canUnresolveThread() {
-    return true;
-  }
-
-  canAddReaction() {
-    return true;
-  }
-
-  canDeleteReaction() {
-    return true;
-  }
-}
+export type { ThreadStoreCallbacks } from "./threadStoreCallbacks.js";
 
 class CallbackThreadStore<
   TThreadMetadata,
@@ -121,7 +33,7 @@ class CallbackThreadStore<
 > extends ThreadStore<TThreadMetadata, TCommentMetadata> {
   public addThreadToDocument = undefined;
 
-  private readonly reconciler: ThreadSnapshotReconciler<
+  private readonly state: CommittedThreadStoreState<
     TThreadMetadata,
     TCommentMetadata
   >;
@@ -131,15 +43,14 @@ class CallbackThreadStore<
     ) => void
   >();
   private readonly loadingRequests = new Map<
-    string | undefined,
-    Promise<BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata>>
+    number,
+    ThreadStoreLoadRequest<TThreadMetadata, TCommentMetadata>
   >();
   private unsubscribeFromSource: (() => void) | undefined;
-  private operationActive = false;
-  private operationQueue: Promise<void> = Promise.resolve();
-  private pageApplicationQueue: Promise<void> = Promise.resolve();
-  private applyingSourceSnapshot = false;
-  private sourceSnapshotChangedReentrantly = false;
+  private mutationQueue: Promise<void> = Promise.resolve();
+  private nextLoadRequestId = 0;
+  private nextIdempotencySequence = 0;
+  private readonly idempotencyPrefix = createThreadStoreIdempotencyPrefix();
 
   constructor(
     private readonly callbacks: ThreadStoreCallbacks<
@@ -151,81 +62,131 @@ class CallbackThreadStore<
       callbacks.auth ??
         new CallbackThreadStoreAuth<TThreadMetadata, TCommentMetadata>(),
     );
-    this.reconciler = new ThreadSnapshotReconciler(callbacks.getSnapshot());
+    this.state = new CommittedThreadStoreState(callbacks.getSnapshot());
   }
 
   createThread(
     options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
   ) {
-    return this.runOperation(async () => {
-      const thread = await this.callbacks.createThread(options);
-      let changed = this.applySourceSnapshot();
-      changed = this.reconciler.applyMutationThread(thread) || changed;
-      this.notify(changed);
-      return thread;
+    return this.runMutation(async (idempotencyKey) => {
+      const receipt = await this.callbacks.createThread({
+        ...options,
+        idempotencyKey,
+      });
+      const normalizedReceipt = assertCreateThreadReceipt(receipt);
+      const applied = this.state.applyCommit(normalizedReceipt);
+      this.notify(applied.changed);
+      const change = applied.change ?? normalizedReceipt.change;
+      if (change.type !== "upsert") {
+        throw invalidThreadStoreState("createThread must commit an upsert.");
+      }
+      return change.thread as ThreadData<TThreadMetadata, TCommentMetadata>;
     });
   }
 
   addComment(options: AddCommentOptions<TCommentMetadata>) {
-    return this.runOperation(async () => {
-      const comment = await this.callbacks.addComment(options);
-      let changed = this.applySourceSnapshot();
-      const thread = this.reconciler
-        .getSnapshot()
-        .threads.get(options.threadId);
-
-      if (thread && !thread.deletedAt) {
-        changed =
-          this.reconciler.applyMutationThread({
-            ...thread,
-            comments: [...thread.comments, comment],
-            updatedAt: latestDate(thread.updatedAt, comment.updatedAt),
-          }) || changed;
+    return this.runMutation(async (idempotencyKey) => {
+      const receipt = await this.callbacks.addComment({
+        ...options,
+        idempotencyKey,
+      });
+      const normalized = assertAddCommentReceipt(receipt, options.threadId);
+      const applied = this.state.applyCommit(normalized.receipt);
+      this.notify(applied.changed);
+      const change = applied.change ?? normalized.receipt.change;
+      if (change.type !== "upsert") {
+        throw invalidThreadStoreState("addComment must commit an upsert.");
       }
-
-      this.notify(changed);
-      return comment;
+      const comment = change.thread.comments.find(
+        (candidate) => candidate.id === normalized.commentId,
+      );
+      if (!comment) {
+        throw invalidThreadStoreState(
+          "addComment result is absent from its authoritative thread.",
+        );
+      }
+      return comment as CommentData<TCommentMetadata>;
     });
   }
 
   updateComment(options: UpdateCommentOptions<TCommentMetadata>) {
-    return this.runMutation(() => this.callbacks.updateComment(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert",
+      (idempotencyKey) =>
+        this.callbacks.updateComment({ ...options, idempotencyKey }),
+    );
   }
 
   deleteComment(options: CommentTarget) {
-    return this.runMutation(() => this.callbacks.deleteComment(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert",
+      (idempotencyKey) =>
+        this.callbacks.deleteComment({ ...options, idempotencyKey }),
+    );
   }
 
   deleteThread(options: { threadId: string }) {
-    return this.runMutation(() => this.callbacks.deleteThread(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert-or-delete",
+      (idempotencyKey) =>
+        this.callbacks.deleteThread({ ...options, idempotencyKey }),
+    );
   }
 
   resolveThread(options: { threadId: string }) {
-    return this.runMutation(() => this.callbacks.resolveThread(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert",
+      (idempotencyKey) =>
+        this.callbacks.resolveThread({ ...options, idempotencyKey }),
+    );
   }
 
   unresolveThread(options: { threadId: string }) {
-    return this.runMutation(() => this.callbacks.reopenThread(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert",
+      (idempotencyKey) =>
+        this.callbacks.reopenThread({ ...options, idempotencyKey }),
+    );
   }
 
   addReaction(options: ReactionTarget) {
-    return this.runMutation(() => this.callbacks.addReaction(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert",
+      (idempotencyKey) =>
+        this.callbacks.addReaction({ ...options, idempotencyKey }),
+    );
   }
 
   deleteReaction(options: ReactionTarget) {
-    return this.runMutation(() => this.callbacks.deleteReaction(options));
+    return this.runThreadMutation(
+      options.threadId,
+      "upsert",
+      (idempotencyKey) =>
+        this.callbacks.deleteReaction({ ...options, idempotencyKey }),
+    );
   }
 
   getThread(threadId: string) {
-    return this.reconciler.getSnapshot().threads.get(threadId);
+    return this.state.getSnapshot().threads.get(threadId) as
+      | ThreadData<TThreadMetadata, TCommentMetadata>
+      | undefined;
   }
 
   getThreads() {
-    return new Map(this.reconciler.getSnapshot().threads);
+    return new Map(this.state.getSnapshot().threads) as Map<
+      string,
+      ThreadData<TThreadMetadata, TCommentMetadata>
+    >;
   }
 
   override getSnapshot() {
-    return this.reconciler.getSnapshot();
+    return this.state.getSnapshot();
   }
 
   override get isLoading() {
@@ -233,79 +194,86 @@ class CallbackThreadStore<
   }
 
   override loadMore(cursor = this.getSnapshot().nextCursor) {
-    const existing = this.loadingRequests.get(cursor);
-    if (existing) {
-      return existing;
-    }
-
+    const snapshot = this.getSnapshot();
     if (
-      cursor === undefined &&
-      this.getSnapshot().completeness === "complete"
+      snapshot.completeness === "complete" ||
+      cursor !== snapshot.nextCursor
     ) {
-      return Promise.resolve(this.getSnapshot());
+      return Promise.resolve(snapshot);
     }
 
-    const wasLoading = this.isLoading;
-    const response = this.callbacks.loadMore(cursor).then(
-      (page) => ({ page }) as const,
-      (error: unknown) => ({ error }) as const,
+    const duplicate = [...this.loadingRequests.values()].find(
+      (request) =>
+        request.cursor === cursor &&
+        sameThreadStoreRevision(request.revision, snapshot.revision),
     );
-    const request = this.pageApplicationQueue.then(async () => {
-      const result = await response;
-      if ("error" in result) {
-        throw result.error;
-      }
-      return this.runOperation(async () => {
-        const changed = this.reconciler.applySnapshot(result.page, "page");
+    if (duplicate) {
+      return duplicate.promise;
+    }
+
+    const id = ++this.nextLoadRequestId;
+    const revision = snapshot.revision;
+    const wasLoading = this.isLoading;
+    const requestOptions = Object.freeze({
+      ...(cursor === undefined ? {} : { cursor }),
+      revision,
+    });
+    let response: Promise<
+      BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata>
+    >;
+    try {
+      response = Promise.resolve(this.callbacks.loadMore(requestOptions));
+    } catch (error) {
+      response = Promise.reject(error);
+    }
+    const promise = response
+      .then((page) => {
+        const changed = this.state.applyPage(page, { cursor, revision });
         this.notify(changed);
         return this.getSnapshot();
-      });
-    });
-    this.pageApplicationQueue = request.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.loadingRequests.set(cursor, request);
-    if (!wasLoading) {
-      this.notify(true);
-    }
-    const clear = () => {
-      if (this.loadingRequests.get(cursor) === request) {
-        this.loadingRequests.delete(cursor);
+      })
+      .finally(() => {
+        this.loadingRequests.delete(id);
         if (!this.isLoading) {
           this.notify(true);
         }
-      }
-    };
-    void request.then(clear, clear);
-    return request;
+      });
+
+    this.loadingRequests.set(id, { id, cursor, revision, promise });
+    if (!wasLoading) {
+      this.notify(true);
+    }
+    return promise;
   }
 
   subscribe(
-    cb: (
+    listener: (
       threads: Map<string, ThreadData<TThreadMetadata, TCommentMetadata>>,
     ) => void,
   ) {
-    this.listeners.add(cb);
+    this.listeners.add(listener);
 
     if (this.listeners.size === 1) {
+      let unsubscribe: (() => void) | undefined;
       try {
-        this.unsubscribeFromSource = this.callbacks.subscribe(() => {
-          if (!this.operationActive) {
-            this.notify(this.applySourceSnapshot());
-          }
+        unsubscribe = this.callbacks.subscribe((commit) => {
+          const applied = this.state.applyCommit(commit);
+          this.notify(applied.changed);
         });
-        this.notify(this.applySourceSnapshot());
+        this.unsubscribeFromSource = unsubscribe;
+        this.notify(
+          this.state.applySourceSnapshot(this.callbacks.getSnapshot()),
+        );
       } catch (error) {
-        this.listeners.delete(cb);
-        this.unsubscribeFromSource?.();
+        this.listeners.delete(listener);
+        unsubscribe?.();
         this.unsubscribeFromSource = undefined;
         throw error;
       }
     }
 
     return () => {
-      this.listeners.delete(cb);
+      this.listeners.delete(listener);
       if (this.listeners.size === 0) {
         this.unsubscribeFromSource?.();
         this.unsubscribeFromSource = undefined;
@@ -313,70 +281,52 @@ class CallbackThreadStore<
     };
   }
 
-  private runMutation(mutation: () => Promise<void>) {
-    return this.runOperation(async () => {
-      await mutation();
-      this.notify(this.applySourceSnapshot());
+  private runThreadMutation(
+    threadId: string,
+    allowedChange: "upsert" | "upsert-or-delete",
+    callback: (
+      idempotencyKey: string,
+    ) => Promise<ThreadStoreMutationReceipt<TThreadMetadata, TCommentMetadata>>,
+  ) {
+    return this.runMutation(async (idempotencyKey) => {
+      const receipt = await callback(idempotencyKey);
+      const normalizedReceipt = assertThreadMutationReceipt(
+        receipt,
+        threadId,
+        allowedChange,
+      );
+      const applied = this.state.applyCommit(normalizedReceipt);
+      this.notify(applied.changed);
     });
   }
 
-  private runOperation<T>(operation: () => Promise<T>) {
-    const run = this.operationQueue.then(async () => {
-      this.operationActive = true;
-      try {
-        return await operation();
-      } finally {
-        this.operationActive = false;
-      }
-    });
-
-    this.operationQueue = run.then(
+  private runMutation<TResult>(
+    operation: (idempotencyKey: string) => Promise<TResult>,
+  ) {
+    const idempotencyKey = `${this.idempotencyPrefix}:${++this.nextIdempotencySequence}`;
+    const run = this.mutationQueue.then(() => operation(idempotencyKey));
+    this.mutationQueue = run.then(
       () => undefined,
       () => undefined,
     );
     return run;
   }
 
-  private applySourceSnapshot() {
-    if (this.applyingSourceSnapshot) {
-      this.sourceSnapshotChangedReentrantly = true;
-      return false;
-    }
-
-    this.applyingSourceSnapshot = true;
-    let changed = false;
-    try {
-      for (let pass = 0; pass < 2; pass++) {
-        this.sourceSnapshotChangedReentrantly = false;
-        changed =
-          this.reconciler.applySnapshot(
-            this.callbacks.getSnapshot(),
-            "source",
-          ) || changed;
-        if (!this.sourceSnapshotChangedReentrantly) {
-          break;
-        }
-      }
-    } finally {
-      this.applyingSourceSnapshot = false;
-      this.sourceSnapshotChangedReentrantly = false;
-    }
-    return changed;
-  }
-
   private notify(changed: boolean) {
     if (!changed) {
       return;
     }
-    for (const listener of this.listeners) {
-      listener(this.getThreads());
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(this.getThreads());
+      } catch {
+        // A consumer listener cannot alter a committed adapter operation.
+      }
     }
   }
 }
 
-/**
- * Creates a generic ThreadStore backed by an application's secure store.
- */
+/** Creates a generic ThreadStore backed by an application's secure store. */
 export function createThreadStore<
   TThreadMetadata = any,
   TCommentMetadata = any,

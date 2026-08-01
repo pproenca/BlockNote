@@ -1,11 +1,13 @@
 import type { BlockNoteEditor } from "../../editor/BlockNoteEditor.js";
 import type {
   BlockNoteThreadSnapshot,
+  BlockNoteThreadStoreRevision,
   CommentBody,
   CommentData,
   ThreadData,
 } from "../types.js";
 import type { ThreadStoreAuth } from "./ThreadStoreAuth.js";
+import { createPublicThreadSnapshot } from "./immutableThreadSnapshot.js";
 
 type CreateThreadOptions<TThreadMetadata, TCommentMetadata> = {
   initialComment: {
@@ -36,6 +38,11 @@ type CommentTarget = {
 type ReactionTarget = CommentTarget & {
   emoji: string;
 };
+
+const legacyThreadStoreRevision: BlockNoteThreadStoreRevision = Object.freeze({
+  sequence: 0,
+  token: "blocknote:legacy-thread-store",
+});
 
 /**
  * Defines the interface to read and mutate threads and comments.
@@ -109,10 +116,11 @@ export abstract class ThreadStore<
    * Legacy stores are complete, non-paginated stores by default.
    */
   getSnapshot(): BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata> {
-    return {
-      threads: this.getThreads(),
+    return createPublicThreadSnapshot<TThreadMetadata, TCommentMetadata>({
+      threads: new Map(this.getThreads()),
       completeness: "complete",
-    };
+      revision: legacyThreadStoreRevision,
+    });
   }
 
   /**

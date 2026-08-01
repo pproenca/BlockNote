@@ -1,7 +1,12 @@
 import { describe, expect, expectTypeOf, it, vi } from "vite-plus/test";
 
 import type {
+  BlockNoteComment,
+  BlockNoteThread,
   BlockNoteThreadSnapshot,
+  BlockNoteThreadStoreCommitReceipt,
+  BlockNoteThreadStoreMutationReceipt,
+  BlockNoteThreadStoreRevision,
   CommentData,
   ThreadData,
 } from "../types.js";
@@ -20,59 +25,51 @@ type CommentMetadata = {
 };
 
 type Snapshot = BlockNoteThreadSnapshot<ThreadMetadata, CommentMetadata>;
+type Callbacks = ThreadStoreCallbacks<ThreadMetadata, CommentMetadata>;
+type Mutable<T> = { -readonly [TKey in keyof T]: T[TKey] };
+type Behavior = Mutable<
+  Pick<
+    Callbacks,
+    | "subscribe"
+    | "loadMore"
+    | "createThread"
+    | "addComment"
+    | "updateComment"
+    | "deleteComment"
+    | "deleteThread"
+    | "resolveThread"
+    | "reopenThread"
+    | "addReaction"
+    | "deleteReaction"
+  >
+>;
 
-type Behavior = {
-  subscribe: ThreadStoreCallbacks<ThreadMetadata, CommentMetadata>["subscribe"];
-  loadMore: ThreadStoreCallbacks<ThreadMetadata, CommentMetadata>["loadMore"];
-  createThread: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["createThread"];
-  addComment: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["addComment"];
-  updateComment: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["updateComment"];
-  deleteComment: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["deleteComment"];
-  deleteThread: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["deleteThread"];
-  resolveThread: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["resolveThread"];
-  reopenThread: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["reopenThread"];
-  addReaction: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["addReaction"];
-  deleteReaction: ThreadStoreCallbacks<
-    ThreadMetadata,
-    CommentMetadata
-  >["deleteReaction"];
-};
+function assertReadonlySnapshotTypes(
+  value: BlockNoteThread<ThreadMetadata, CommentMetadata>,
+) {
+  // @ts-expect-error snapshot comment arrays are readonly
+  value.comments.push(value.comments[0]!);
+  // @ts-expect-error snapshot reaction arrays are readonly
+  value.comments[0]!.reactions.push(value.comments[0]!.reactions[0]!);
+}
+
+void assertReadonlySnapshotTypes;
+
+function revision(sequence: number, token = `revision-${sequence}`) {
+  return { sequence, token };
+}
 
 function date(value: number) {
   return new Date(value);
 }
 
-function comment(id: string, revision: number): CommentData<CommentMetadata> {
+function comment(id: string, version: number): CommentData<CommentMetadata> {
   return {
     type: "comment",
     id,
     userId: "user-1",
-    createdAt: date(revision),
-    updatedAt: date(revision),
+    createdAt: date(version),
+    updatedAt: date(version),
     reactions: [],
     metadata: { origin: "human" },
     body: [{ type: "paragraph", content: id }],
@@ -81,15 +78,15 @@ function comment(id: string, revision: number): CommentData<CommentMetadata> {
 
 function thread(
   id: string,
-  revision: number,
+  version: number,
   overrides: Partial<ThreadData<ThreadMetadata, CommentMetadata>> = {},
 ): ThreadData<ThreadMetadata, CommentMetadata> {
   return {
     type: "thread",
     id,
-    createdAt: date(revision),
-    updatedAt: date(revision),
-    comments: [comment(`${id}-comment`, revision)],
+    createdAt: date(version),
+    updatedAt: date(version),
+    comments: [comment(`${id}-comment`, version)],
     resolved: false,
     metadata: { label: id },
     ...overrides,
@@ -98,6 +95,7 @@ function thread(
 
 function snapshot(
   threads: ThreadData<ThreadMetadata, CommentMetadata>[],
+  storeRevision: BlockNoteThreadStoreRevision,
   completeness: "partial" | "complete" = "partial",
   nextCursor?: string,
 ): Snapshot {
@@ -105,7 +103,43 @@ function snapshot(
     threads: new Map(threads.map((item) => [item.id, item])),
     completeness,
     ...(nextCursor === undefined ? {} : { nextCursor }),
+    revision: storeRevision,
   };
+}
+
+function upsertCommit(
+  storeRevision: BlockNoteThreadStoreRevision,
+  value: ThreadData<ThreadMetadata, CommentMetadata>,
+): BlockNoteThreadStoreCommitReceipt<ThreadMetadata, CommentMetadata> {
+  return { revision: storeRevision, change: { type: "upsert", thread: value } };
+}
+
+function deleteCommit(
+  storeRevision: BlockNoteThreadStoreRevision,
+  threadId: string,
+): BlockNoteThreadStoreCommitReceipt<ThreadMetadata, CommentMetadata> {
+  return { revision: storeRevision, change: { type: "delete", threadId } };
+}
+
+function mutationReceipt<TResult>(
+  commit: BlockNoteThreadStoreCommitReceipt<ThreadMetadata, CommentMetadata>,
+  result: TResult,
+): BlockNoteThreadStoreMutationReceipt<
+  ThreadMetadata,
+  CommentMetadata,
+  TResult
+> {
+  return { ...commit, result } as BlockNoteThreadStoreMutationReceipt<
+    ThreadMetadata,
+    CommentMetadata,
+    TResult
+  >;
+}
+
+function voidReceipt(
+  commit: BlockNoteThreadStoreCommitReceipt<ThreadMetadata, CommentMetadata>,
+): BlockNoteThreadStoreMutationReceipt<ThreadMetadata, CommentMetadata, void> {
+  return commit;
 }
 
 function deferred<T>() {
@@ -120,7 +154,14 @@ function deferred<T>() {
 
 function createHarness(initialSnapshot: Snapshot) {
   let sourceSnapshot = initialSnapshot;
-  const sourceListeners = new Set<() => void>();
+  const sourceListeners = new Set<
+    (
+      commit: BlockNoteThreadStoreCommitReceipt<
+        ThreadMetadata,
+        CommentMetadata
+      >,
+    ) => void
+  >();
   const unused = async () => {
     throw new Error("unused callback");
   };
@@ -132,18 +173,18 @@ function createHarness(initialSnapshot: Snapshot) {
     loadMore: unused,
     createThread: unused,
     addComment: unused,
-    updateComment: async () => {},
-    deleteComment: async () => {},
-    deleteThread: async () => {},
-    resolveThread: async () => {},
-    reopenThread: async () => {},
-    addReaction: async () => {},
-    deleteReaction: async () => {},
+    updateComment: unused,
+    deleteComment: unused,
+    deleteThread: unused,
+    resolveThread: unused,
+    reopenThread: unused,
+    addReaction: unused,
+    deleteReaction: unused,
   };
   const store = createThreadStore<ThreadMetadata, CommentMetadata>({
     getSnapshot: () => sourceSnapshot,
     subscribe: (listener) => behavior.subscribe(listener),
-    loadMore: (cursor) => behavior.loadMore(cursor),
+    loadMore: (options) => behavior.loadMore(options),
     createThread: (options) => behavior.createThread(options),
     addComment: (options) => behavior.addComment(options),
     updateComment: (options) => behavior.updateComment(options),
@@ -158,62 +199,76 @@ function createHarness(initialSnapshot: Snapshot) {
   return {
     behavior,
     store,
-    emitSource() {
+    emit(
+      commit: BlockNoteThreadStoreCommitReceipt<
+        ThreadMetadata,
+        CommentMetadata
+      >,
+    ) {
       for (const listener of [...sourceListeners]) {
-        listener();
+        listener(commit);
       }
     },
     setSource(next: Snapshot) {
       sourceSnapshot = next;
-      for (const listener of [...sourceListeners]) {
-        listener();
-      }
     },
   };
 }
 
 describe("createThreadStore", () => {
-  it("flows thread and comment metadata through callbacks without casts", async () => {
-    const initial = snapshot([], "complete");
+  it("infers metadata, revisions, idempotency, and readonly snapshots", async () => {
     const created = thread("created", 1);
+    const reply = comment("reply", 2);
+    const withReply = { ...created, comments: [...created.comments, reply] };
+    const initial = snapshot([], revision(0), "complete");
     const store = createThreadStore<ThreadMetadata, CommentMetadata>({
       getSnapshot: () => initial,
       subscribe: () => () => {},
-      loadMore: async () => initial,
+      loadMore: async (options) => {
+        expectTypeOf(
+          options.revision,
+        ).toEqualTypeOf<BlockNoteThreadStoreRevision>();
+        return initial;
+      },
       createThread: async (options) => {
+        expectTypeOf(options.idempotencyKey).toEqualTypeOf<string>();
         expectTypeOf(options.metadata).toEqualTypeOf<
           ThreadMetadata | undefined
         >();
         expectTypeOf(options.initialComment.metadata).toEqualTypeOf<
           CommentMetadata | undefined
         >();
-        return created;
+        return mutationReceipt(upsertCommit(revision(1), created), created);
       },
       addComment: async (options) => {
         expectTypeOf(options.comment.metadata).toEqualTypeOf<
           CommentMetadata | undefined
         >();
-        return comment("reply", 2);
+        return mutationReceipt(upsertCommit(revision(2), withReply), reply);
       },
-      updateComment: async (options) => {
-        expectTypeOf(options.comment.metadata).toEqualTypeOf<
-          CommentMetadata | undefined
-        >();
-      },
-      deleteComment: async () => {},
-      deleteThread: async () => {},
-      resolveThread: async () => {},
-      reopenThread: async () => {},
-      addReaction: async () => {},
-      deleteReaction: async () => {},
+      updateComment: async () =>
+        voidReceipt(upsertCommit(revision(3), created)),
+      deleteComment: async () =>
+        voidReceipt(upsertCommit(revision(3), created)),
+      deleteThread: async () =>
+        voidReceipt(deleteCommit(revision(3), created.id)),
+      resolveThread: async () =>
+        voidReceipt(upsertCommit(revision(3), created)),
+      reopenThread: async () => voidReceipt(upsertCommit(revision(3), created)),
+      addReaction: async () => voidReceipt(upsertCommit(revision(3), created)),
+      deleteReaction: async () =>
+        voidReceipt(upsertCommit(revision(3), created)),
     });
 
     expectTypeOf(store.getThread("missing")).toEqualTypeOf<
       ThreadData<ThreadMetadata, CommentMetadata> | undefined
     >();
     expectTypeOf(store.getSnapshot().threads).toEqualTypeOf<
-      ReadonlyMap<string, ThreadData<ThreadMetadata, CommentMetadata>>
+      ReadonlyMap<string, BlockNoteThread<ThreadMetadata, CommentMetadata>>
     >();
+    expectTypeOf(
+      store.getSnapshot().threads.get("missing")?.comments,
+    ).toEqualTypeOf<readonly BlockNoteComment<CommentMetadata>[] | undefined>();
 
     await expect(
       store.createThread({
@@ -223,285 +278,291 @@ describe("createThreadStore", () => {
           metadata: { origin: "agent" },
         },
       }),
-    ).resolves.toBe(created);
+    ).resolves.toMatchObject({ id: "created" });
   });
 
-  it("keeps a stable snapshot and ignores duplicate source emissions", () => {
-    const firstThread = thread("first", 1);
-    const harness = createHarness(snapshot([firstThread]));
-    const firstSnapshot = harness.store.getSnapshot();
-    const listener = vi.fn();
-    const unsubscribe = harness.store.subscribe(listener);
+  it("commits a successful operation despite a throwing subscriber", async () => {
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const created = thread("created", 1);
+    const keys: string[] = [];
+    harness.behavior.createThread = async (options) => {
+      keys.push(options.idempotencyKey);
+      return mutationReceipt(upsertCommit(revision(1), created), created);
+    };
+    const unsubscribe = harness.store.subscribe(() => {
+      throw new Error("consumer failed");
+    });
 
-    expect(harness.store.getSnapshot()).toBe(firstSnapshot);
-    harness.setSource(snapshot([{ ...firstThread }]));
+    await expect(
+      harness.store.createThread({ initialComment: { body: [] } }),
+    ).resolves.toMatchObject({ id: "created" });
 
-    expect(harness.store.getSnapshot()).toBe(firstSnapshot);
-    expect(listener).not.toHaveBeenCalled();
+    expect(harness.store.getThread("created")?.id).toBe("created");
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(/^blocknote-thread:/);
     unsubscribe();
   });
 
-  it("preserves absent rows in partial snapshots until a complete snapshot", () => {
-    const first = thread("first", 1);
-    const second = thread("second", 2);
-    const harness = createHarness(snapshot([first], "partial", "page-2"));
-    const unsubscribe = harness.store.subscribe(() => {});
+  it("cleans up a rejected load despite a throwing subscriber", async () => {
+    const harness = createHarness(snapshot([], revision(1), "partial", "next"));
+    harness.behavior.loadMore = async () => {
+      throw new Error("load failed");
+    };
+    const unsubscribe = harness.store.subscribe(() => {
+      throw new Error("consumer failed");
+    });
 
-    harness.setSource(snapshot([second], "partial", "page-3"));
-    expect([...harness.store.getSnapshot().threads.keys()]).toEqual([
-      "first",
-      "second",
-    ]);
-    expect(harness.store.getThread("not-loaded")).toBeUndefined();
-    expect(harness.store.getSnapshot().completeness).toBe("partial");
-
-    harness.setSource(snapshot([second], "complete"));
-    expect([...harness.store.getSnapshot().threads.keys()]).toEqual(["second"]);
-    expect(harness.store.getSnapshot().completeness).toBe("complete");
+    await expect(harness.store.loadMore()).rejects.toThrow("load failed");
+    expect(harness.store.isLoading).toBe(false);
     unsubscribe();
   });
 
-  it("composes partial pages and removes the cursor at completeness", async () => {
-    const first = thread("first", 1);
-    const second = thread("second", 2);
-    const third = thread("third", 3);
-    const harness = createHarness(snapshot([first], "partial", "page-2"));
-    const pages = new Map<string | undefined, Snapshot>([
-      ["page-2", snapshot([second], "partial", "page-3")],
-      ["page-3", snapshot([third], "complete")],
-    ]);
-    harness.behavior.loadMore = async (cursor) => pages.get(cursor)!;
+  it("normalizes a synchronous loadMore adapter result", async () => {
+    const next = thread("next", 1);
+    const harness = createHarness(snapshot([], revision(1), "partial", "next"));
+    harness.behavior.loadMore = (() =>
+      snapshot(
+        [next],
+        revision(1),
+        "complete",
+      )) as unknown as Callbacks["loadMore"];
 
-    await harness.store.loadMore();
-    expect([...harness.store.getSnapshot().threads.keys()]).toEqual([
-      "first",
-      "second",
-    ]);
-    expect(harness.store.getSnapshot().nextCursor).toBe("page-3");
-
-    await harness.store.loadMore();
-    expect([...harness.store.getSnapshot().threads.keys()]).toEqual([
-      "first",
-      "second",
-      "third",
-    ]);
-    expect(harness.store.getSnapshot()).toMatchObject({
+    await expect(harness.store.loadMore()).resolves.toMatchObject({
       completeness: "complete",
     });
-    expect(harness.store.getSnapshot()).not.toHaveProperty("nextCursor");
+    expect(harness.store.getThread(next.id)?.id).toBe(next.id);
+    expect(harness.store.isLoading).toBe(false);
   });
 
-  it("tracks loading separately from unknown and does not coalesce cursors", async () => {
-    const harness = createHarness(snapshot([], "partial", "first-cursor"));
-    const firstPage = deferred<Snapshot>();
-    const secondPage = deferred<Snapshot>();
-    const loadMore = vi.fn((cursor?: string) =>
-      cursor === "first-cursor" ? firstPage.promise : secondPage.promise,
+  it("creates then hard-deletes a thread from authoritative receipts", async () => {
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const created = thread("created", 1);
+    harness.behavior.createThread = async () =>
+      mutationReceipt(upsertCommit(revision(1), created), created);
+    harness.behavior.deleteThread = async () =>
+      voidReceipt(deleteCommit(revision(2), created.id));
+
+    await harness.store.createThread({ initialComment: { body: [] } });
+    await harness.store.deleteThread({ threadId: created.id });
+
+    expect(harness.store.getThread(created.id)).toBeUndefined();
+    expect(harness.store.getSnapshot().revision).toEqual(revision(2));
+  });
+
+  it("does not resurrect a remote hard delete from a stale page", async () => {
+    const target = thread("target", 1);
+    const harness = createHarness(
+      snapshot([target], revision(1), "partial", "page-2"),
+    );
+    const page = deferred<Snapshot>();
+    harness.behavior.loadMore = () => page.promise;
+    const unsubscribe = harness.store.subscribe(() => {});
+
+    const request = harness.store.loadMore();
+    harness.emit(deleteCommit(revision(2), target.id));
+    page.resolve(snapshot([target], revision(1), "complete"));
+    await request;
+
+    expect(harness.store.getThread(target.id)).toBeUndefined();
+    expect(harness.store.getSnapshot().revision).toEqual(revision(2));
+    unsubscribe();
+  });
+
+  it("binds cursors to their revision and restarts a newer generation", async () => {
+    const first = thread("first", 1);
+    const unrelated = thread("unrelated", 2);
+    const second = thread("second", 2);
+    const harness = createHarness(
+      snapshot([first], revision(1), "partial", "old-cursor"),
+    );
+    const oldPage = deferred<Snapshot>();
+    const newPage = deferred<Snapshot>();
+    const loadMore = vi.fn((options: Parameters<Callbacks["loadMore"]>[0]) =>
+      options.revision.sequence === 1 ? oldPage.promise : newPage.promise,
     );
     harness.behavior.loadMore = loadMore;
-    const listener = vi.fn();
-    const unsubscribe = harness.store.subscribe(listener);
-    const before = harness.store.getSnapshot();
+    const unsubscribe = harness.store.subscribe(() => {});
 
-    const firstRequest = harness.store.loadMore("first-cursor");
-    const duplicateRequest = harness.store.loadMore("first-cursor");
-    const secondRequest = harness.store.loadMore("second-cursor");
+    const oldRequest = harness.store.loadMore();
+    harness.emit(upsertCommit(revision(2), unrelated));
+    await harness.store.loadMore("old-cursor");
+    const newRequest = harness.store.loadMore();
 
-    expect(duplicateRequest).toBe(firstRequest);
-    expect(secondRequest).not.toBe(firstRequest);
     expect(loadMore).toHaveBeenCalledTimes(2);
-    expect(harness.store.isLoading).toBe(true);
-    expect(harness.store.getThread("unknown")).toBeUndefined();
-    expect(harness.store.getSnapshot().completeness).toBe("partial");
-    expect(harness.store.getSnapshot()).toBe(before);
+    expect(loadMore.mock.calls[0]![0]).toEqual({
+      cursor: "old-cursor",
+      revision: revision(1),
+    });
+    expect(loadMore.mock.calls[1]![0]).toEqual({ revision: revision(2) });
 
-    secondPage.resolve(
-      snapshot([thread("second", 2)], "partial", "after-second"),
-    );
-    await Promise.resolve();
-    expect(harness.store.isLoading).toBe(true);
+    newPage.resolve(snapshot([second], revision(2), "complete"));
+    await newRequest;
+    oldPage.resolve(snapshot([thread("stale", 1)], revision(1), "complete"));
+    await oldRequest;
 
-    firstPage.resolve(snapshot([thread("first", 1)], "partial", "after-first"));
-    await Promise.all([firstRequest, secondRequest]);
-    expect(harness.store.isLoading).toBe(false);
+    expect(harness.store.getThread("stale")).toBeUndefined();
     expect([...harness.store.getSnapshot().threads.keys()].sort()).toEqual([
-      "first",
       "second",
+      "unrelated",
     ]);
-    expect(harness.store.getSnapshot().nextCursor).toBe("after-second");
-    expect(listener).toHaveBeenCalled();
     unsubscribe();
   });
 
-  it("keeps lifecycle states separate", () => {
-    const deleted = thread("deleted", 1, { deletedAt: date(5) });
-    const resolved = thread("resolved", 2, {
-      resolved: true,
-      resolvedUpdatedAt: date(6),
-    });
-    const detached = thread("detached", 3, { detached: true });
+  it("keeps an unrelated source commit during a rejected mutation", async () => {
+    const original = thread("original", 1);
+    const unrelated = thread("unrelated", 2);
     const harness = createHarness(
-      snapshot([deleted, resolved, detached], "partial"),
+      snapshot([original], revision(1), "complete"),
     );
-
-    expect(harness.store.getThread("deleted")?.deletedAt).toEqual(date(5));
-    expect(harness.store.getThread("resolved")).toMatchObject({
-      resolved: true,
-    });
-    expect(harness.store.getThread("resolved")?.detached).toBeUndefined();
-    expect(harness.store.getThread("detached")).toMatchObject({
-      resolved: false,
-      detached: true,
-    });
-    expect(harness.store.isLoading).toBe(false);
-    expect(harness.store.getThread("unknown")).toBeUndefined();
-  });
-
-  it("does not resurrect deleted rows from stale or equal snapshots", () => {
-    const live = thread("target", 1);
-    const deleted = thread("target", 1, { deletedAt: date(5) });
-    const harness = createHarness(snapshot([live]));
-    const unsubscribe = harness.store.subscribe(() => {});
-
-    harness.setSource(snapshot([deleted]));
-    harness.setSource(snapshot([live]));
-    expect(harness.store.getThread("target")?.deletedAt).toEqual(date(5));
-
-    harness.setSource(snapshot([], "complete"));
-    expect(harness.store.getThread("target")).toBeUndefined();
-
-    harness.setSource(snapshot([live]));
-    expect(harness.store.getThread("target")).toBeUndefined();
-    unsubscribe();
-  });
-
-  it("resolves equal-timestamp conflicts independently of arrival order", () => {
-    const left = thread("target", 1, { metadata: { label: "left" } });
-    const right = thread("target", 1, { metadata: { label: "right" } });
-    const leftFirst = createHarness(snapshot([left]));
-    const rightFirst = createHarness(snapshot([right]));
-    const unsubscribeLeft = leftFirst.store.subscribe(() => {});
-    const unsubscribeRight = rightFirst.store.subscribe(() => {});
-
-    leftFirst.setSource(snapshot([right]));
-    rightFirst.setSource(snapshot([left]));
-
-    expect(leftFirst.store.getThread("target")?.metadata).toEqual(
-      rightFirst.store.getThread("target")?.metadata,
-    );
-    unsubscribeLeft();
-    unsubscribeRight();
-  });
-
-  it("does not inspect opaque metadata unsafely during reconciliation", () => {
-    const opaque = () =>
-      new Proxy(
-        {},
-        {
-          ownKeys() {
-            throw new Error("opaque metadata");
-          },
-        },
-      );
-    const first = thread("target", 1, {
-      metadata: { label: "opaque", opaque: opaque() },
-    });
-    const second = thread("target", 1, {
-      metadata: { label: "opaque", opaque: opaque() },
-    });
-    const harness = createHarness(snapshot([first]));
-    const unsubscribe = harness.store.subscribe(() => {});
-
-    expect(() => harness.setSource(snapshot([second]))).not.toThrow();
-    expect(harness.store.getThread("target")?.id).toBe("target");
-    unsubscribe();
-  });
-
-  it("does not commit subscription state emitted by a rejected mutation", async () => {
-    const original = thread("target", 1);
-    const optimistic = thread("target", 2, {
-      metadata: { label: "optimistic" },
-    });
-    const harness = createHarness(snapshot([original]));
-    const listener = vi.fn();
-    const unsubscribe = harness.store.subscribe(listener);
+    const mutationStarted = deferred<void>();
+    const release = deferred<void>();
     harness.behavior.updateComment = async () => {
-      harness.setSource(snapshot([optimistic]));
+      mutationStarted.resolve();
+      await release.promise;
       throw new Error("rejected");
+    };
+    const unsubscribe = harness.store.subscribe(() => {});
+
+    const request = harness.store.updateComment({
+      threadId: original.id,
+      commentId: original.comments[0]!.id,
+      comment: { body: [] },
+    });
+    await mutationStarted.promise;
+    harness.emit(upsertCommit(revision(2), unrelated));
+    release.resolve();
+
+    await expect(request).rejects.toThrow("rejected");
+    expect(harness.store.getThread(unrelated.id)?.id).toBe(unrelated.id);
+    expect(harness.store.getSnapshot().revision).toEqual(revision(2));
+    unsubscribe();
+  });
+
+  it("rejects unrelated mutation receipts before changing state", async () => {
+    const target = thread("target", 1);
+    const unrelated = thread("unrelated", 2);
+    const harness = createHarness(snapshot([target], revision(1), "complete"));
+    const keys: string[] = [];
+    harness.behavior.updateComment = async (options) => {
+      keys.push(options.idempotencyKey);
+      return voidReceipt(upsertCommit(revision(2), unrelated));
     };
 
     await expect(
       harness.store.updateComment({
-        threadId: "target",
-        commentId: "target-comment",
+        threadId: target.id,
+        commentId: target.comments[0]!.id,
         comment: { body: [] },
       }),
-    ).rejects.toThrow("rejected");
+    ).rejects.toMatchObject({ code: "invalid-document" });
 
-    expect(harness.store.getThread("target")?.metadata.label).toBe("target");
-    expect(listener).not.toHaveBeenCalled();
-    unsubscribe();
+    expect(harness.store.getThread(unrelated.id)).toBeUndefined();
+    expect(harness.store.getSnapshot().revision).toEqual(revision(1));
+    expect(keys).toHaveLength(1);
   });
 
-  it("reconciles a mutation result with a newer concurrent source snapshot", async () => {
-    const harness = createHarness(snapshot([]));
-    const created = deferred<ThreadData<ThreadMetadata, CommentMetadata>>();
-    const older = thread("target", 1, { metadata: { label: "older" } });
-    const newer = thread("target", 2, { metadata: { label: "newer" } });
-    harness.behavior.createThread = () => created.promise;
-    const unsubscribe = harness.store.subscribe(() => {});
+  it("rejects inconsistent create and add results", async () => {
+    const target = thread("target", 1);
+    const other = thread("other", 1);
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    harness.behavior.createThread = async () =>
+      mutationReceipt(upsertCommit(revision(1), target), other);
 
-    const request = harness.store.createThread({
-      metadata: { label: "older" },
-      initialComment: { body: [], metadata: { origin: "human" } },
+    await expect(
+      harness.store.createThread({ initialComment: { body: [] } }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+    expect(harness.store.getSnapshot().revision).toEqual(revision(0));
+
+    harness.behavior.addComment = async () =>
+      mutationReceipt(upsertCommit(revision(1), target), comment("absent", 1));
+    await expect(
+      harness.store.addComment({
+        threadId: target.id,
+        comment: { body: [] },
+      }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+  });
+
+  it("normalizes hostile mutation receipts before inspecting them", async () => {
+    const target = thread("target", 1);
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const createReceipt = mutationReceipt(
+      upsertCommit(revision(1), target),
+      target,
+    );
+    harness.behavior.createThread = async () =>
+      new Proxy(createReceipt, {
+        get(value, property, receiver) {
+          if (property === "change") {
+            throw new Error("hostile change getter");
+          }
+          return Reflect.get(value, property, receiver);
+        },
+      });
+
+    await expect(
+      harness.store.createThread({ initialComment: { body: [] } }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+
+    const addReceipt = mutationReceipt(
+      upsertCommit(revision(1), target),
+      target.comments[0]!,
+    );
+    harness.behavior.addComment = async () =>
+      new Proxy(addReceipt, {
+        get(value, property, receiver) {
+          if (property === "result") {
+            throw new Error("hostile result getter");
+          }
+          return Reflect.get(value, property, receiver);
+        },
+      });
+    await expect(
+      harness.store.addComment({ threadId: target.id, comment: { body: [] } }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+
+    const updateReceipt = voidReceipt(upsertCommit(revision(1), target));
+    harness.behavior.updateComment = async () =>
+      new Proxy(updateReceipt, {
+        get(value, property, receiver) {
+          if (property === "change") {
+            throw new Error("hostile target getter");
+          }
+          return Reflect.get(value, property, receiver);
+        },
+      });
+    await expect(
+      harness.store.updateComment({
+        threadId: target.id,
+        commentId: target.comments[0]!.id,
+        comment: { body: [] },
+      }),
+    ).rejects.toMatchObject({ code: "invalid-document" });
+
+    expect(harness.store.getSnapshot().revision).toEqual(revision(0));
+    expect(harness.store.getSnapshot().threads.size).toBe(0);
+  });
+
+  it("does not swallow source revision conflicts", () => {
+    const target = thread("target", 1);
+    const harness = createHarness(
+      snapshot([target], revision(1, "accepted"), "complete"),
+    );
+    const unsubscribe = harness.store.subscribe(() => {
+      throw new Error("consumer failure");
     });
-    harness.setSource(snapshot([newer]));
-    created.resolve(older);
-    await request;
 
-    expect(harness.store.getThread("target")?.metadata.label).toBe("newer");
+    expect(() =>
+      harness.emit(upsertCommit(revision(1, "conflict"), target)),
+    ).toThrow(expect.objectContaining({ code: "document-conflict" }));
+    expect(harness.store.getSnapshot().revision).toEqual(
+      revision(1, "accepted"),
+    );
     unsubscribe();
   });
 
-  it("protects a successful mutation result from stale complete snapshots", async () => {
-    const initial = snapshot([], "complete");
-    const created = thread("created", 2);
-    const harness = createHarness(initial);
-    harness.behavior.createThread = async () => created;
-    const unsubscribe = harness.store.subscribe(() => {});
-
-    await harness.store.createThread({
-      metadata: { label: "created" },
-      initialComment: { body: [], metadata: { origin: "human" } },
-    });
-    harness.emitSource();
-    expect(harness.store.getThread("created")).toBe(created);
-
-    harness.setSource(snapshot([created], "complete"));
-    harness.setSource(snapshot([], "complete"));
-    expect(harness.store.getThread("created")).toBeUndefined();
-    unsubscribe();
-  });
-
-  it("handles a synchronous source emission while subscribing", () => {
-    const harness = createHarness(snapshot([]));
-    const next = snapshot([thread("synchronous", 1)]);
-    harness.behavior.subscribe = (listener) => {
-      harness.setSource(next);
-      listener();
-      return () => {};
-    };
-    const listener = vi.fn();
-
-    const unsubscribe = harness.store.subscribe(listener);
-
-    expect(harness.store.getThread("synchronous")?.id).toBe("synchronous");
-    expect(listener).toHaveBeenCalledTimes(1);
-    unsubscribe();
-  });
-
-  it("removes a listener when source subscription throws", () => {
-    const harness = createHarness(snapshot([]));
+  it("removes a facade listener when adapter subscription throws", () => {
+    const harness = createHarness(snapshot([], revision(0), "complete"));
     const rejectedListener = vi.fn();
     harness.behavior.subscribe = () => {
       throw new Error("subscribe failed");
@@ -511,20 +572,10 @@ describe("createThreadStore", () => {
       "subscribe failed",
     );
 
-    const sourceListeners = new Set<() => void>();
-    harness.behavior.subscribe = (listener) => {
-      sourceListeners.add(listener);
-      return () => sourceListeners.delete(listener);
-    };
+    harness.behavior.subscribe = () => () => {};
     const acceptedListener = vi.fn();
     const unsubscribe = harness.store.subscribe(acceptedListener);
-    expect(sourceListeners.size).toBe(1);
-    for (const listener of sourceListeners) {
-      listener();
-    }
-
     expect(rejectedListener).not.toHaveBeenCalled();
-    expect(acceptedListener).not.toHaveBeenCalled();
     unsubscribe();
   });
 });
