@@ -63,12 +63,14 @@ jobs:
             version="$PACKAGE_VERSION" \
             homepage=https://github.com/pproenca/BlockNote \
             repository.url=git+https://github.com/pproenca/BlockNote.git
+          pnpm --dir packages/core pkg delete gitHead
           pnpm --dir packages/react pkg set \
             name=@pproenca/blocknote-react \
             version="$PACKAGE_VERSION" \
             homepage=https://github.com/pproenca/BlockNote \
             repository.url=git+https://github.com/pproenca/BlockNote.git \
             "peerDependencies[\"@blocknote/core\"]=$PACKAGE_VERSION"
+          pnpm --dir packages/react pkg delete gitHead
           pnpm --dir packages/server-util pkg set \
             name=@pproenca/blocknote-server-util \
             version="$PACKAGE_VERSION" \
@@ -76,6 +78,7 @@ jobs:
             repository.url=git+https://github.com/pproenca/BlockNote.git \
             "peerDependencies[\"@blocknote/core\"]=$PACKAGE_VERSION" \
             "peerDependencies[\"@blocknote/react\"]=$PACKAGE_VERSION"
+          pnpm --dir packages/server-util pkg delete gitHead
 
           pnpm --dir packages/core pack --pack-destination ../../artifacts/npm
           pnpm --dir packages/react pack --pack-destination ../../artifacts/npm
