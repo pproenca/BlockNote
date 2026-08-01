@@ -10,6 +10,11 @@ const FRAME_MAGIC_0 = 0x42;
 const FRAME_MAGIC_1 = 0x4e;
 const FRAME_VERSION = 1;
 
+const typedArrayByteLengthDescriptor = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype) as object,
+  "byteLength",
+)!;
+
 const frameKindCodes = {
   checkpoint: 1,
   change: 2,
@@ -36,14 +41,13 @@ function oversizedFrame() {
   );
 }
 
-function assertBytes(value: unknown): asserts value is Uint8Array {
-  let isBytes = false;
+function getByteLength(value: unknown) {
   try {
-    isBytes = value instanceof Uint8Array;
+    if (!(value instanceof Uint8Array)) {
+      throw new TypeError();
+    }
+    return typedArrayByteLengthDescriptor.get!.call(value) as number;
   } catch {
-    // A revoked Proxy can throw while checking its prototype.
-  }
-  if (!isBytes) {
     throw invalidFrame("BlockNote persistence bytes must be a Uint8Array.");
   }
 }
@@ -73,7 +77,10 @@ export function encodeBlockNotePersistenceFrame(
   kind: BlockNotePersistenceFrameKind,
   value: Uint8Array,
 ) {
-  assertBytes(value);
+  const inputLength = getByteLength(value);
+  if (inputLength > BLOCK_NOTE_PERSISTENCE_MAX_PAYLOAD_BYTES) {
+    throw oversizedFrame();
+  }
   const payload = copyBytes(value);
   if (payload.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_PAYLOAD_BYTES) {
     throw oversizedFrame();
@@ -95,7 +102,10 @@ export function decodeBlockNotePersistenceFrame(
   value: Uint8Array,
   expectedKind: BlockNotePersistenceFrameKind,
 ) {
-  assertBytes(value);
+  const inputLength = getByteLength(value);
+  if (inputLength > BLOCK_NOTE_PERSISTENCE_MAX_FRAME_BYTES) {
+    throw oversizedFrame();
+  }
   const frame = copyBytes(value);
   if (frame.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_FRAME_BYTES) {
     throw oversizedFrame();
