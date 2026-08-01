@@ -11,6 +11,19 @@ export * from "./api/nodeUtil.js";
 export * from "./api/pmUtil.js";
 export * from "./access/BlockNoteAccess.js";
 export * from "./blocks/index.js";
+export { CommentsExtension } from "./comments/extension.js";
+export {
+  createThreadStore,
+  type ThreadStoreCallbacks,
+} from "./comments/threadstore/createThreadStore.js";
+export { DefaultThreadStoreAuth } from "./comments/threadstore/DefaultThreadStoreAuth.js";
+export { ThreadStore } from "./comments/threadstore/ThreadStore.js";
+export { ThreadStoreAuth } from "./comments/threadstore/ThreadStoreAuth.js";
+export type {
+  BlockNoteComment,
+  BlockNoteThread,
+  BlockNoteThreadSnapshot,
+} from "./comments/types.js";
 export * from "./document/BlockNoteDocument.js";
 export * from "./document/BlockNoteDocumentExtension.js";
 export * from "./editor/BlockNoteEditor.js";
@@ -23,6 +36,7 @@ export * from "./extensions-shared/UiElementPosition.js";
 export * from "./i18n/dictionary.js";
 export * from "./platform/BlockNoteError.js";
 export * from "./platform/BlockNoteStore.js";
+export * from "./persistence/BlockNotePersistence.js";
 export * from "./schema/index.js";
 export * from "./user/index.js";
 export * from "./util/browser.js";

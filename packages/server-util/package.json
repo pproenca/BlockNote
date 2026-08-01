@@ -42,6 +42,11 @@
       "import": "./dist/blocknote-server-util.js",
       "require": "./dist/blocknote-server-util.cjs"
     },
+    "./headless": {
+      "types": "./types/src/headless/index.d.ts",
+      "import": "./dist/headless.js",
+      "require": "./dist/headless.cjs"
+    },
     "./style.css": {
       "import": "./dist/style.css",
       "require": "./dist/style.css",

@@ -40,6 +40,7 @@ export default defineConfig(
         lib: {
           entry: {
             "blocknote-server-util": path.resolve(__dirname, "src/index.ts"),
+            headless: path.resolve(__dirname, "src/headless/index.ts"),
           },
           name: "blocknote-server-util",
           formats: ["es", "cjs"],
