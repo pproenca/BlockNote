@@ -37,7 +37,13 @@ function oversizedFrame() {
 }
 
 function assertBytes(value: unknown): asserts value is Uint8Array {
-  if (!(value instanceof Uint8Array)) {
+  let isBytes = false;
+  try {
+    isBytes = value instanceof Uint8Array;
+  } catch {
+    // A revoked Proxy can throw while checking its prototype.
+  }
+  if (!isBytes) {
     throw invalidFrame("BlockNote persistence bytes must be a Uint8Array.");
   }
 }

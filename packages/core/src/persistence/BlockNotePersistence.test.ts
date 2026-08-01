@@ -250,6 +250,13 @@ describe("blockNotePersistence", () => {
       "invalid-document",
     );
 
+    const revoked = Proxy.revocable(new Uint8Array(8), {});
+    revoked.revoke();
+    expectFailure(
+      () => blockNotePersistence.checkpointFromBytes(revoked.proxy),
+      "invalid-document",
+    );
+
     const hostileLength = new Uint8Array(8);
     Object.defineProperty(hostileLength, "byteLength", {
       get() {
