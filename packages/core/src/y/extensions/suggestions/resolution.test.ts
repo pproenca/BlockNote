@@ -37,6 +37,25 @@ describe("suggestion resolution", () => {
     ["deletion", "hello world", "hello"],
     ["replacement", "hello world", "hello universe"],
   ] as const)(
+    "projects an authoritative %s rejection into a mounted suggestion view",
+    async (_kind, initial, proposed) => {
+      const { baseDoc, suggestionDoc, editor } = createFixture(initial);
+      suggestions(editor).enableSuggestions();
+      setText(editor, proposed);
+      const id = pending(editor)[0]!.id;
+
+      await suggestions(editor).reject(id);
+
+      expect(readBaseText(baseDoc)).toBe(initial);
+      expect(readBaseText(suggestionDoc)).toBe(initial);
+      expect(editor.prosemirrorState.doc.textContent).toBe(initial);
+    },
+  );
+
+  it.each([
+    ["deletion", "hello world", "hello"],
+    ["replacement", "hello world", "hello universe"],
+  ] as const)(
     "rejects a %s after the deleted payload passes through gc",
     async (_kind, initial, proposed) => {
       const { baseDoc, suggestionDoc, editor } = createFixture(initial);
@@ -66,6 +85,16 @@ describe("suggestion resolution", () => {
 
       expect(readBaseText(authorityBase)).toBe(initial);
       expect(readBaseText(authoritySuggestion)).toBe(initial);
+      const scope = authoritySuggestion.get("doc");
+      const keptContent = [...authoritySuggestion.store.clients.values()]
+        .flat()
+        .filter(
+          (struct): struct is Y.Item =>
+            struct instanceof Y.Item &&
+            Y.isParentOf(scope, struct) &&
+            struct.keep,
+        );
+      expect(keptContent).toEqual([]);
       expect(suggestions(authority).store.get()).toEqual([
         expect.objectContaining({ id, status: "rejected" }),
       ]);

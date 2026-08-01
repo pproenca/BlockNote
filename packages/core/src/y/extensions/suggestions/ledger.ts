@@ -126,20 +126,18 @@ export function assertLedgerCapacity(
 
 export function assertCanTrackSuggestionEdit(
   binding: NativeSuggestionsBinding,
+  rangeBudget = 1,
 ) {
-  const canContinue = [...getIndexedRecords(binding).values()].some(
-    (record) =>
-      record.status === "pending" &&
-      !record.hasExecution &&
-      record.creatorId === binding.creatorId &&
-      record.rangeKeys.length < NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord,
+  const ranges = Math.max(1, rangeBudget);
+  const headers = Math.ceil(
+    ranges / NATIVE_SUGGESTION_LIMITS.maxRangesPerRecord,
   );
-  const headers = canContinue ? 0 : 1;
   assertLedgerCapacity(binding, {
     headers,
-    ranges: 1,
-    entries: headers + 1,
-    bytes: 224 + utf8Length(actorIdFor(binding) ?? ""),
+    ranges,
+    entries: headers + ranges,
+    bytes:
+      headers * (96 + utf8Length(actorIdFor(binding) ?? "")) + ranges * 128,
   });
 }
 
@@ -568,6 +566,23 @@ function compactTerminalRanges(
   markLedgerDirty(binding);
 }
 
+function retainPendingContent(
+  binding: NativeSuggestionsBinding,
+  transaction: Y.Transaction,
+  records: ReadonlyMap<string, NativeSuggestionRecord>,
+) {
+  for (const record of records.values()) {
+    if (record.status === "pending" && !record.hasReceipt) {
+      retainDeletedContent(
+        binding,
+        transaction,
+        record.id,
+        record.contentIds.deletes,
+      );
+    }
+  }
+}
+
 export function observeNativeSuggestions(
   binding: NativeSuggestionsBinding,
   onChange: () => void,
@@ -610,7 +625,11 @@ export function observeNativeSuggestions(
     const scope = findTypeInOtherYdoc(binding.fragment, binding.suggestionDoc);
     if (!transaction.local) {
       markLedgerDirty(binding);
-      getIndexedRecords(binding, true);
+      retainPendingContent(
+        binding,
+        transaction,
+        getIndexedRecords(binding, true),
+      );
       return;
     }
     if (!binding.renderer.suggestionMode) {
@@ -635,7 +654,10 @@ export function observeNativeSuggestions(
   binding.suggestionDoc.on("afterTransaction", onSuggestionTransaction);
   binding.fragment.doc?.on("afterTransaction", onBaseTransaction);
   markLedgerDirty(binding);
-  getIndexedRecords(binding, false);
+  const records = getIndexedRecords(binding, false);
+  binding.suggestionDoc.transact((transaction) => {
+    retainPendingContent(binding, transaction, records);
+  }, ledgerOrigin);
 
   return () => {
     binding.suggestionDoc.off("beforeObserverCalls", onBeforeObserverCalls);

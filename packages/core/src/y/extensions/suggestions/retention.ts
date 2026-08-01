@@ -58,6 +58,25 @@ export function retainDeletedContent(
   });
 }
 
+export function retainResolutionContent(
+  binding: NativeSuggestionsBinding,
+  transaction: Y.Transaction,
+  suggestionId: string,
+  inserts: Y.IdSet,
+) {
+  if (inserts.isEmpty()) {
+    return;
+  }
+  const state = getState(binding.suggestionDoc);
+  const retained = state.bySuggestion.get(suggestionId) ?? new Set<Y.Item>();
+  state.bySuggestion.set(suggestionId, retained);
+  Y.iterateStructsByIdSet(transaction, inserts, (struct) => {
+    if (struct instanceof Y.Item) {
+      retainItem(state, retained, struct);
+    }
+  });
+}
+
 export function releaseDeletedContent(
   binding: NativeSuggestionsBinding,
   suggestionId: string,

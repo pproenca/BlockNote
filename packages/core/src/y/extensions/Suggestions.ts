@@ -207,7 +207,16 @@ const createSuggestionsExtension = ({
             sync?.ytype === suggestionType &&
             sync.renderer === runtime.renderer
           ) {
-            assertCanTrackSuggestionEdit(runtime);
+            let rangeBudget = 0;
+            for (const stepMap of transaction.mapping.maps) {
+              stepMap.forEach((oldStart, oldEnd, newStart, newEnd) => {
+                rangeBudget += Math.max(
+                  1,
+                  oldEnd - oldStart + (newEnd - newStart),
+                );
+              });
+            }
+            assertCanTrackSuggestionEdit(runtime, Math.max(1, rangeBudget));
           }
           return true;
         },

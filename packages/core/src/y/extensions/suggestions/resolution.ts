@@ -13,6 +13,7 @@ import {
   ledgerOrigin,
   NATIVE_SUGGESTION_LIMITS,
   resolutionOrigin,
+  utf8Length,
   type NativeDisposition,
   type NativeExecution,
   type NativeReceipt,
@@ -20,6 +21,7 @@ import {
   type NativeSuggestionsBinding,
   type NativeSuggestionStatus,
 } from "./model.js";
+import { retainResolutionContent } from "./retention.js";
 
 type TerminalStatus = Exclude<NativeSuggestionStatus, "pending">;
 
@@ -135,7 +137,7 @@ function writeReceipt(
   assertLedgerCapacity(binding, {
     ranges: -record.rangeKeys.length,
     entries: 1 - record.rangeKeys.length,
-    bytes: 128 + preview.length - record.rangeKeys.length * 128,
+    bytes: 128 + utf8Length(preview) - record.rangeKeys.length * 128,
   });
   binding.suggestionDoc.transact(() => {
     const receipt: NativeReceipt = {
@@ -192,6 +194,12 @@ function applyRejectedContent(
   try {
     binding.suggestionDoc.transact((transaction) => {
       oneShotUndoContentIds(binding, record.contentIds);
+      retainResolutionContent(
+        binding,
+        transaction,
+        record.id,
+        transaction.insertSet,
+      );
       changed = Y.mergeIdSets([
         changed,
         transaction.insertSet,
