@@ -333,7 +333,10 @@ export async function createDownstreamConsumer({
       release,
     );
     const fileDependency = `file:${tarball}`;
-    dependencies[packageDefinition.upstreamName] = fileDependency;
+    dependencies[packageDefinition.upstreamName] = expectedDependencyValue(
+      packageDefinition,
+      release,
+    );
     overrides[packageDefinition.upstreamName] = fileDependency;
 
     for (const [peerName, peerVersion] of Object.entries(
@@ -567,6 +570,9 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   await main();
 }

@@ -177,9 +177,9 @@ await test("creates one hermetic Product-style downstream consumer", async () =>
     "@blocknote/server-util",
     "@blocknote/test-utils",
   ]);
-  assert.match(
+  assert.equal(
     manifest.dependencies["@blocknote/core"],
-    /pproenca-blocknote-core-0\.52\.1-pf\.7\.tgz$/,
+    "npm:@pproenca/blocknote-core@0.52.1-pf.7",
   );
   assert.match(
     workspace,
