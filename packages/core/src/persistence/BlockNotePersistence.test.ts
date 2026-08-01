@@ -243,6 +243,30 @@ describe("blockNotePersistence", () => {
       () => blockNotePersistenceInternals.changeFromPayload(detached),
       "invalid-document",
     );
+
+    const proxied = new Proxy(new Uint8Array(8), {});
+    expectFailure(
+      () => blockNotePersistence.checkpointFromBytes(proxied),
+      "invalid-document",
+    );
+
+    const hostileLength = new Uint8Array(8);
+    Object.defineProperty(hostileLength, "byteLength", {
+      get() {
+        throw new Error("hostile byteLength");
+      },
+    });
+    expectFailure(
+      () => blockNotePersistence.checkpointFromBytes(hostileLength),
+      "invalid-document",
+    );
+    expect(
+      blockNotePersistenceInternals.changeFromPayload(hostileLength),
+    ).toMatchObject({
+      kind: "blocknote-change",
+      byteLength: BLOCK_NOTE_PERSISTENCE_FRAME_HEADER_BYTES + 8,
+    });
+
     expectFailure(
       () =>
         blockNotePersistence.checkpointToBytes({

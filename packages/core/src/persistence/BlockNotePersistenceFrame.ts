@@ -68,11 +68,10 @@ export function encodeBlockNotePersistenceFrame(
   value: Uint8Array,
 ) {
   assertBytes(value);
-  if (value.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_PAYLOAD_BYTES) {
+  const payload = copyBytes(value);
+  if (payload.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_PAYLOAD_BYTES) {
     throw oversizedFrame();
   }
-
-  const payload = copyBytes(value);
 
   const frame = new Uint8Array(
     BLOCK_NOTE_PERSISTENCE_FRAME_HEADER_BYTES + payload.byteLength,
@@ -91,11 +90,10 @@ export function decodeBlockNotePersistenceFrame(
   expectedKind: BlockNotePersistenceFrameKind,
 ) {
   assertBytes(value);
-  if (value.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_FRAME_BYTES) {
+  const frame = copyBytes(value);
+  if (frame.byteLength > BLOCK_NOTE_PERSISTENCE_MAX_FRAME_BYTES) {
     throw oversizedFrame();
   }
-
-  const frame = copyBytes(value);
   if (frame.byteLength < BLOCK_NOTE_PERSISTENCE_FRAME_HEADER_BYTES) {
     throw invalidFrame("BlockNote persistence frame is truncated.");
   }
