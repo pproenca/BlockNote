@@ -43,6 +43,19 @@ export const packedPackageCases = [
     publicImports: [
       { specifier: "@blocknote/core", exportName: "BlockNoteSchema" },
       {
+        specifier: "@blocknote/core",
+        exportName: "createBlockNoteDocument",
+      },
+      {
+        specifier: "@blocknote/core",
+        exportName: "createBlockNoteAccess",
+      },
+      { specifier: "@blocknote/core", exportName: "BlockNoteError" },
+      {
+        specifier: "@blocknote/core",
+        exportName: "createBlockNoteStore",
+      },
+      {
         specifier: "@blocknote/core/detect-markdown",
         exportName: "isMarkdown",
       },
