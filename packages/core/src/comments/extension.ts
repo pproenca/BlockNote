@@ -11,7 +11,7 @@ import { normalizeToUserStore, UserStoreOrResolver } from "../user/index.js";
 import { CustomBlockNoteSchema } from "../schema/schema.js";
 import { CommentMark } from "./mark.js";
 import type { ThreadStore } from "./threadstore/ThreadStore.js";
-import type { CommentBody, ThreadData } from "./types.js";
+import type { CommentBody } from "./types.js";
 
 const PLUGIN_KEY = new PluginKey("blocknote-comments");
 
@@ -129,19 +129,18 @@ export const CommentsExtension = createExtension(
       },
     );
 
-    const updateMarksFromThreads = (threads: Map<string, ThreadData>) => {
+    const updateMarksFromThreads = () => {
+      const snapshot = threadStore.getSnapshot();
       editor.transact((tr) => {
         tr.doc.descendants((node, pos) => {
           node.marks.forEach((mark) => {
             if (mark.type.name === markType) {
               const markTypeInstance = mark.type;
               const markThreadId = mark.attrs.threadId as string;
-              const thread = threads.get(markThreadId);
-              const isOrphan = !!(
-                !thread ||
-                thread.resolved ||
-                thread.deletedAt
-              );
+              const thread = snapshot.threads.get(markThreadId);
+              const isOrphan = thread
+                ? !!(thread.detached || thread.resolved || thread.deletedAt)
+                : snapshot.completeness === "complete";
 
               if (isOrphan !== mark.attrs.orphan) {
                 const trimmedFrom = Math.max(pos, 0);
@@ -299,7 +298,7 @@ export const CommentsExtension = createExtension(
       threadStore: threadStore,
       mount() {
         const unsubscribe = threadStore.subscribe(updateMarksFromThreads);
-        updateMarksFromThreads(threadStore.getThreads());
+        updateMarksFromThreads();
 
         const unsubscribeOnSelectionChange = editor.onSelectionChange(() => {
           if (store.state.pendingComment) {

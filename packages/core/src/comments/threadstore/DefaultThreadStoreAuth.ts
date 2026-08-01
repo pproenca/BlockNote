@@ -1,4 +1,4 @@
-import { CommentData, ThreadData } from "../types.js";
+import type { CommentData, ThreadData } from "../types.js";
 import { ThreadStoreAuth } from "./ThreadStoreAuth.js";
 
 /*
@@ -15,7 +15,10 @@ import { ThreadStoreAuth } from "./ThreadStoreAuth.js";
  * - - resolve / unresolve threads
  * - Editors can also delete any comment or thread
  */
-export class DefaultThreadStoreAuth extends ThreadStoreAuth {
+export class DefaultThreadStoreAuth<
+  TThreadMetadata = any,
+  TCommentMetadata = any,
+> extends ThreadStoreAuth<TThreadMetadata, TCommentMetadata> {
   constructor(
     private readonly userId: string,
     private readonly role: "comment" | "editor",
@@ -33,42 +36,50 @@ export class DefaultThreadStoreAuth extends ThreadStoreAuth {
   /**
    * Auth: should be possible by anyone with comment access
    */
-  canAddComment(_thread: ThreadData): boolean {
+  canAddComment(
+    _thread: ThreadData<TThreadMetadata, TCommentMetadata>,
+  ): boolean {
     return true;
   }
 
   /**
    * Auth: should only be possible by the comment author
    */
-  canUpdateComment(comment: CommentData): boolean {
+  canUpdateComment(comment: CommentData<TCommentMetadata>): boolean {
     return comment.userId === this.userId;
   }
 
   /**
    * Auth: should be possible by the comment author OR an editor of the document
    */
-  canDeleteComment(comment: CommentData): boolean {
+  canDeleteComment(comment: CommentData<TCommentMetadata>): boolean {
     return comment.userId === this.userId || this.role === "editor";
   }
 
   /**
    * Auth: should only be possible by an editor of the document
    */
-  canDeleteThread(_thread: ThreadData): boolean {
+  canDeleteThread(
+    _thread: ThreadData<TThreadMetadata, TCommentMetadata>,
+  ): boolean {
     return this.role === "editor";
   }
 
   /**
    * Auth: should be possible by anyone with comment access
    */
-  canResolveThread(_thread: ThreadData): boolean {
+  canResolveThread(
+    _thread: ThreadData<TThreadMetadata, TCommentMetadata>,
+  ): boolean {
     return true;
   }
 
   /**
    * Auth: should be possible by anyone with comment access
    */
-  canUnresolveThread(_thread: ThreadData): boolean {
+  canUnresolveThread(
+    _thread: ThreadData<TThreadMetadata, TCommentMetadata>,
+  ): boolean {
     return true;
   }
 
@@ -77,7 +88,10 @@ export class DefaultThreadStoreAuth extends ThreadStoreAuth {
    *
    * Note: will also check if the user has already reacted with the same emoji. TBD: is that a nice design or should this responsibility be outside of auth?
    */
-  canAddReaction(comment: CommentData, emoji?: string): boolean {
+  canAddReaction(
+    comment: CommentData<TCommentMetadata>,
+    emoji?: string,
+  ): boolean {
     if (!emoji) {
       return true;
     }
@@ -93,7 +107,10 @@ export class DefaultThreadStoreAuth extends ThreadStoreAuth {
    *
    * Note: will also check if the user has already reacted with the same emoji. TBD: is that a nice design or should this responsibility be outside of auth?
    */
-  canDeleteReaction(comment: CommentData, emoji?: string): boolean {
+  canDeleteReaction(
+    comment: CommentData<TCommentMetadata>,
+    emoji?: string,
+  ): boolean {
     if (!emoji) {
       return true;
     }

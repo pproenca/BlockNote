@@ -1,25 +1,57 @@
-import { BlockNoteEditor } from "../../editor/BlockNoteEditor.js";
-import { CommentBody, CommentData, ThreadData } from "../types.js";
-import { ThreadStoreAuth } from "./ThreadStoreAuth.js";
+import type { BlockNoteEditor } from "../../editor/BlockNoteEditor.js";
+import type {
+  BlockNoteThreadSnapshot,
+  CommentBody,
+  CommentData,
+  ThreadData,
+} from "../types.js";
+import type { ThreadStoreAuth } from "./ThreadStoreAuth.js";
+
+type CreateThreadOptions<TThreadMetadata, TCommentMetadata> = {
+  initialComment: {
+    body: CommentBody;
+    metadata?: TCommentMetadata;
+  };
+  metadata?: TThreadMetadata;
+};
+
+type AddCommentOptions<TCommentMetadata> = {
+  comment: {
+    body: CommentBody;
+    metadata?: TCommentMetadata;
+  };
+  threadId: string;
+};
+
+type UpdateCommentOptions<TCommentMetadata> =
+  AddCommentOptions<TCommentMetadata> & {
+    commentId: string;
+  };
+
+type CommentTarget = {
+  threadId: string;
+  commentId: string;
+};
+
+type ReactionTarget = CommentTarget & {
+  emoji: string;
+};
 
 /**
- * ThreadStore is an abstract class that defines the interface
- * to read / add / update / delete threads and comments.
+ * Defines the interface to read and mutate threads and comments.
  */
-export abstract class ThreadStore {
-  public readonly auth: ThreadStoreAuth;
+export abstract class ThreadStore<
+  TThreadMetadata = any,
+  TCommentMetadata = any,
+> {
+  public readonly auth: ThreadStoreAuth<TThreadMetadata, TCommentMetadata>;
 
-  constructor(auth: ThreadStoreAuth) {
+  constructor(auth: ThreadStoreAuth<TThreadMetadata, TCommentMetadata>) {
     this.auth = auth;
   }
 
   /**
-   * A "thread" in the ThreadStore only contains information about the content
-   * of the thread / comments. It does not contain information about the position.
-   *
-   * This function can be implemented to store the thread in the document (by creating a mark)
-   * If not implemented, default behavior will apply (creating the mark via TipTap)
-   * See CommentsPlugin.ts for more details.
+   * Adds a thread's legacy mark to the document when supported by the store.
    */
   abstract addThreadToDocument?(options: {
     threadId: string;
@@ -30,101 +62,78 @@ export abstract class ThreadStore {
     editor: BlockNoteEditor<any, any, any>;
   }): Promise<void>;
 
-  /**
-   * Creates a new thread with an initial comment.
-   */
-  abstract createThread(options: {
-    initialComment: {
-      body: CommentBody;
-      metadata?: any;
-    };
-    metadata?: any;
-  }): Promise<ThreadData>;
+  abstract createThread(
+    options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
+  ): Promise<ThreadData<TThreadMetadata, TCommentMetadata>>;
 
-  /**
-   * Adds a comment to a thread.
-   */
-  abstract addComment(options: {
-    comment: {
-      body: CommentBody;
-      metadata?: any;
-    };
-    threadId: string;
-  }): Promise<CommentData>;
+  abstract addComment(
+    options: AddCommentOptions<TCommentMetadata>,
+  ): Promise<CommentData<TCommentMetadata>>;
 
-  /**
-   * Updates a comment in a thread.
-   */
-  abstract updateComment(options: {
-    comment: {
-      body: CommentBody;
-      metadata?: any;
-    };
-    threadId: string;
-    commentId: string;
-  }): Promise<void>;
+  abstract updateComment(
+    options: UpdateCommentOptions<TCommentMetadata>,
+  ): Promise<void>;
 
-  /**
-   * Deletes a comment from a thread.
-   */
-  abstract deleteComment(options: {
-    threadId: string;
-    commentId: string;
-  }): Promise<void>;
+  abstract deleteComment(options: CommentTarget): Promise<void>;
 
-  /**
-   * Deletes a thread.
-   */
   abstract deleteThread(options: { threadId: string }): Promise<void>;
 
-  /**
-   * Marks a thread as resolved.
-   */
   abstract resolveThread(options: { threadId: string }): Promise<void>;
 
-  /**
-   * Marks a thread as unresolved.
-   */
   abstract unresolveThread(options: { threadId: string }): Promise<void>;
 
   /**
-   * Adds a reaction to a comment.
-   *
-   * Auth: should be possible by anyone with comment access
+   * Alias for `unresolveThread` using the public domain term.
    */
-  abstract addReaction(options: {
-    threadId: string;
-    commentId: string;
-    emoji: string;
-  }): Promise<void>;
+  reopenThread(options: { threadId: string }): Promise<void> {
+    return this.unresolveThread(options);
+  }
+
+  abstract addReaction(options: ReactionTarget): Promise<void>;
+
+  abstract deleteReaction(options: ReactionTarget): Promise<void>;
 
   /**
-   * Deletes a reaction from a comment.
-   *
-   * Auth: should be possible by the reaction author
+   * Returns a known thread, or `undefined` when a partial store has not loaded it.
    */
-  abstract deleteReaction(options: {
-    threadId: string;
-    commentId: string;
-    emoji: string;
-  }): Promise<void>;
+  abstract getThread(
+    threadId: string,
+  ): ThreadData<TThreadMetadata, TCommentMetadata> | undefined;
+
+  abstract getThreads(): Map<
+    string,
+    ThreadData<TThreadMetadata, TCommentMetadata>
+  >;
 
   /**
-   * Retrieve data for a specific thread.
+   * Legacy stores are complete, non-paginated stores by default.
    */
-  abstract getThread(threadId: string): ThreadData;
+  getSnapshot(): BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata> {
+    return {
+      threads: this.getThreads(),
+      completeness: "complete",
+    };
+  }
 
   /**
-   * Retrieve all threads.
+   * Whether this store is currently loading an additional snapshot page.
    */
-  abstract getThreads(): Map<string, ThreadData>;
+  get isLoading() {
+    return false;
+  }
 
   /**
-   * Subscribe to changes in the thread store.
-   *
-   * @returns a function to unsubscribe from the thread store
+   * Complete legacy stores have no additional pages.
    */
+  async loadMore(
+    _cursor?: string,
+  ): Promise<BlockNoteThreadSnapshot<TThreadMetadata, TCommentMetadata>> {
+    return this.getSnapshot();
+  }
+
   abstract subscribe(
-    cb: (threads: Map<string, ThreadData>) => void,
+    cb: (
+      threads: Map<string, ThreadData<TThreadMetadata, TCommentMetadata>>,
+    ) => void,
   ): () => void;
 }
