@@ -79,9 +79,10 @@ export function GridSuggestionMenuWrapper<Item>(props: {
   useEffect(() => {
     setContentEditableProps((p) => ({
       ...p,
-      "aria-activedescendant": selectedIndex
-        ? "bn-suggestion-menu-item-" + selectedIndex
-        : undefined,
+      "aria-activedescendant":
+        selectedIndex !== undefined
+          ? "bn-suggestion-menu-item-" + selectedIndex
+          : undefined,
     }));
     return () => {
       setContentEditableProps((p) => ({
