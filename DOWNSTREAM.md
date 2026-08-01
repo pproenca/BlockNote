@@ -12,6 +12,8 @@ downstream releases are cut from a short-lived integration branch.
   policy outside BlockNote.
 - Accept capabilities, storage adapters, and mutation callbacks through public
   extension options. The application server remains authoritative.
+- Keep shared BlockNote runtimes as peer dependencies across adapter packages so
+  a consumer cannot install competing editor instances.
 - Change core behavior only when a public extension seam cannot express the
   requirement, and keep that change independently reviewable.
 - Keep downstream commits small enough to rebase or replay onto a new upstream
