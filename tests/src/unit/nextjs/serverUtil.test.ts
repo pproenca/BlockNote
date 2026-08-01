@@ -1,196 +1,276 @@
-import { execSync, spawn, ChildProcess } from "child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
+
 import { getPort } from "get-port-please";
-import path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-const TEST_APP_DIR = path.resolve(__dirname, "../../../nextjs-test-app");
-let PORT: number;
-let BASE_URL: string;
-const MODE = (process.env.NEXTJS_TEST_MODE || "dev") as "dev" | "build";
+import {
+  buildAndPackPackages,
+  packedPackageCases,
+  prepareNextConsumer,
+  removeNextConsumer,
+  removePackedArtifacts,
+  runPublicConsumerProbe,
+  type PackedArtifactSet,
+} from "./packedConsumer.js";
 
-let nextProcess: ChildProcess;
-let serverOutput = "";
-let serverErrors = "";
+const requestedMode = process.env.NEXTJS_TEST_MODE || "dev";
+if (requestedMode !== "dev" && requestedMode !== "build") {
+  throw new Error(`Unknown NEXTJS_TEST_MODE: ${requestedMode}`);
+}
+const mode: "dev" | "build" = requestedMode;
 
-/**
- * Regression test for #942: @blocknote/server-util must work in Next.js
- * App Router server contexts (API routes) with serverExternalPackages.
- *
- * Set NEXTJS_TEST_MODE=build to test against a production build (slower
- * but catches different issues). Defaults to dev mode for fast iteration.
- */
-// TODO: Re-enable once @y/prosemirror v14 compatibility issues are resolved.
-// Currently fails because @y/y no longer exports `Text` (needed by @y/prosemirror's
-// sync-plugin) and stale tarball builds cause missing chunk errors.
-describe.skip(`server-util in Next.js App Router (#942) [${MODE}]`, () => {
-  beforeAll(async () => {
-    PORT = await getPort({ portRange: [3900, 4100] });
-    BASE_URL = `http://localhost:${PORT}`;
+let packedArtifacts: PackedArtifactSet | undefined;
 
-    // Pack and install @blocknote packages as tarballs
-    execSync("bash setup.sh", {
-      cwd: TEST_APP_DIR,
-      stdio: "pipe",
-      timeout: 240_000,
-    });
+beforeAll(() => {
+  packedArtifacts = buildAndPackPackages();
+}, 240_000);
 
-    if (MODE === "build") {
-      // Build the Next.js app first
-      execSync("npx next build", {
-        cwd: TEST_APP_DIR,
-        stdio: "pipe",
-        timeout: 120_000,
-      });
+afterAll(() => {
+  removePackedArtifacts(packedArtifacts);
+});
 
-      // Start production server
-      nextProcess = spawn("npx", ["next", "start", "--port", String(PORT)], {
-        cwd: TEST_APP_DIR,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
-    } else {
-      // Start dev server with Turbopack
-      nextProcess = spawn(
-        "npx",
-        ["next", "dev", "--turbopack", "--port", String(PORT)],
-        {
-          cwd: TEST_APP_DIR,
-          stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, NODE_ENV: "development" },
-          detached: true,
-        },
-      );
-    }
+const getPackedArtifacts = () => {
+  if (!packedArtifacts) {
+    throw new Error("Packed BlockNote artifacts are unavailable");
+  }
 
-    // Wait for "Ready" message
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Next.js ${MODE} server did not start within 60s`));
-      }, 60_000);
+  return packedArtifacts;
+};
 
-      let stderr = "";
+describe("built BlockNote package contracts", () => {
+  it("installs tarballs and resolves public runtime and declaration imports", () => {
+    const proof = runPublicConsumerProbe(getPackedArtifacts());
+    const expectedImports = packedPackageCases.flatMap(
+      ({ packageName, publicImports }) =>
+        publicImports.map((publicImport) => ({
+          packageName,
+          ...publicImport,
+        })),
+    );
 
-      nextProcess.stdout?.on("data", (data: Buffer) => {
-        const text = data.toString();
-        serverOutput += text;
-        if (text.includes("Ready")) {
-          clearTimeout(timeout);
-          resolve();
-        }
-      });
-
-      nextProcess.stderr?.on("data", (data: Buffer) => {
-        stderr += data.toString();
-        serverErrors += data.toString();
-      });
-
-      nextProcess.on("error", (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
-
-      nextProcess.on("exit", (code) => {
-        if (code !== null && code !== 0) {
-          clearTimeout(timeout);
-          reject(new Error(`Next.js exited with code ${code}: ${stderr}`));
-        }
-      });
-    });
+    expect(
+      proof.installedPackages.map(({ packageName, version }) => ({
+        packageName,
+        version,
+      })),
+    ).toEqual(
+      packedPackageCases.map(({ packageName }) => ({
+        packageName,
+        version: getPackedArtifacts().artifacts.find(
+          (artifact) => artifact.packageCase.packageName === packageName,
+        )?.version,
+      })),
+    );
+    expect(
+      proof.publicImports.map(
+        ({ packageName, specifier, exportName, resolvedPath }) => ({
+          packageName,
+          specifier,
+          exportName,
+          isBuiltOutput: resolvedPath.includes(`${path.sep}dist${path.sep}`),
+        }),
+      ),
+    ).toEqual(
+      expectedImports.map((entry) => ({ ...entry, isBuiltOutput: true })),
+    );
   }, 180_000);
+});
 
-  afterAll(async () => {
-    if (nextProcess?.pid == null) {
+describe(`server-util in a fresh Next.js App Router consumer (#942) [${mode}]`, () => {
+  let port = 0;
+  let baseUrl = "";
+  let consumerDirectory: string | undefined;
+  let nextProcess: ChildProcess | undefined;
+  let processError: Error | undefined;
+  let serverOutput = "";
+  let serverErrors = "";
+
+  const recentServerOutput = () =>
+    `Server stdout:\n${serverOutput.slice(-2_000)}\n\nServer stderr:\n${serverErrors.slice(-2_000)}`;
+
+  const signalProcess = (signal: NodeJS.Signals) => {
+    if (!nextProcess?.pid) {
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      nextProcess.once("exit", () => resolve());
+    try {
+      if (process.platform === "win32") {
+        nextProcess.kill(signal);
+      } else {
+        process.kill(-nextProcess.pid, signal);
+      }
+    } catch {
+      // The process already exited.
+    }
+  };
 
-      try {
-        // Kill the entire process group so Next.js children don't linger
-        process.kill(-nextProcess.pid!, "SIGTERM");
-      } catch {
-        // Process may have already exited
-        resolve();
+  const waitForExit = (timeout: number) =>
+    new Promise<boolean>((resolve) => {
+      if (
+        !nextProcess ||
+        nextProcess.exitCode !== null ||
+        nextProcess.signalCode !== null
+      ) {
+        resolve(true);
         return;
       }
 
-      // Escalate to SIGKILL if still alive after 5s
-      setTimeout(() => {
-        try {
-          process.kill(-nextProcess.pid!, "SIGKILL");
-        } catch {
-          // already gone
-        }
-      }, 5_000);
+      const timer = setTimeout(() => {
+        nextProcess?.off("exit", onExit);
+        resolve(false);
+      }, timeout);
+      timer.unref();
+
+      const onExit = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      nextProcess.once("exit", onExit);
     });
+
+  const stopServer = async () => {
+    if (!nextProcess) {
+      return;
+    }
+    if (nextProcess.exitCode !== null || nextProcess.signalCode !== null) {
+      nextProcess = undefined;
+      return;
+    }
+
+    signalProcess("SIGTERM");
+    if (!(await waitForExit(5_000))) {
+      signalProcess("SIGKILL");
+      if (!(await waitForExit(2_000))) {
+        throw new Error("Next.js process did not exit after SIGKILL");
+      }
+    }
+    nextProcess = undefined;
+  };
+
+  const waitForServer = async () => {
+    const deadline = Date.now() + 60_000;
+
+    while (Date.now() < deadline) {
+      if (processError) {
+        throw processError;
+      }
+      if (
+        nextProcess?.exitCode !== null &&
+        nextProcess?.exitCode !== undefined
+      ) {
+        throw new Error(
+          `Next.js exited with code ${nextProcess.exitCode}\n\n${recentServerOutput()}`,
+        );
+      }
+
+      try {
+        await fetch(`${baseUrl}/editor`);
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    throw new Error(
+      `Next.js ${mode} server did not start within 60s\n\n${recentServerOutput()}`,
+    );
+  };
+
+  beforeAll(async () => {
+    consumerDirectory = prepareNextConsumer(getPackedArtifacts());
+    port = await getPort({ portRange: [3900, 4100] });
+    baseUrl = `http://localhost:${port}`;
+    const nextBinary = path.join(
+      consumerDirectory,
+      "node_modules",
+      ".bin",
+      "next",
+    );
+
+    try {
+      if (mode === "build") {
+        execFileSync(nextBinary, ["build"], {
+          cwd: consumerDirectory,
+          env: { ...process.env, CI: "1", NODE_ENV: "production" },
+          maxBuffer: 20 * 1024 * 1024,
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 180_000,
+        });
+      }
+
+      nextProcess = spawn(
+        nextBinary,
+        mode === "build"
+          ? ["start", "--port", String(port)]
+          : ["dev", "--turbopack", "--port", String(port)],
+        {
+          cwd: consumerDirectory,
+          detached: process.platform !== "win32",
+          env: {
+            ...process.env,
+            NODE_ENV: mode === "build" ? "production" : "development",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      nextProcess.stdout?.on("data", (data: Buffer) => {
+        serverOutput += data.toString();
+      });
+      nextProcess.stderr?.on("data", (data: Buffer) => {
+        serverErrors += data.toString();
+      });
+      nextProcess.once("error", (error) => {
+        processError = error;
+      });
+
+      await waitForServer();
+    } catch (error) {
+      await stopServer();
+      throw new Error(`${String(error)}\n\n${recentServerOutput()}`, {
+        cause: error,
+      });
+    }
+  }, 240_000);
+
+  afterAll(async () => {
+    await stopServer();
+    removeNextConsumer(consumerDirectory);
   });
 
-  it("ServerBlockNoteEditor works in API route (mirrors ReactServer.test.tsx)", async () => {
-    const res = await fetch(`${BASE_URL}/api/server-util`);
-    const text = await res.text();
-    let body: any;
+  it("runs ServerBlockNoteEditor in an API route", async () => {
+    const response = await fetch(`${baseUrl}/api/server-util`);
+    const text = await response.text();
+    let body: {
+      allPassed: boolean;
+      results: Record<string, string>;
+    };
+
     try {
-      body = JSON.parse(text);
-    } catch {
-      const nextDataMatch = text.match(
-        /<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/,
-      );
-      let errorMessage = `Next.js returned ${res.status}`;
-      if (nextDataMatch) {
-        try {
-          errorMessage =
-            JSON.parse(nextDataMatch[1])?.err?.message || errorMessage;
-        } catch {
-          // ignore invalid JSON
-        }
-      }
-      throw new Error(errorMessage);
-    }
-    expect(res.status).toBe(200);
-    if (!body.allPassed) {
+      body = JSON.parse(text) as typeof body;
+    } catch (error) {
       throw new Error(
-        `Failed results: ${JSON.stringify(body.results, null, 2)}`,
+        `Next.js returned non-JSON ${response.status}: ${text.slice(0, 500)}\n\n${recentServerOutput()}`,
+        { cause: error },
       );
     }
 
-    // Verify individual results match ReactServer.test.tsx scenarios
+    expect(response.status).toBe(200);
+    expect(body.allPassed, JSON.stringify(body.results, null, 2)).toBe(true);
     expect(body.results.simpleReactBlock).toMatch(/^PASS:/);
     expect(body.results.reactContextBlock).toMatch(/^PASS:/);
     expect(body.results.blocksToHTMLLossy).toMatch(/^PASS:/);
     expect(body.results.yDocRoundtrip).toMatch(/^PASS:/);
   }, 30_000);
 
-  it("Editor page with shared schema renders without errors", async () => {
-    const res = await fetch(`${BASE_URL}/editor`);
-    const html = await res.text();
+  it("renders the editor page from installed packages", async () => {
+    const response = await fetch(`${baseUrl}/editor`);
+    const html = await response.text();
 
-    if (res.status !== 200) {
-      const nextDataMatch = html.match(
-        /<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/,
-      );
-      const digestMatch = html.match(/digest="([^"]+)"/);
-      let errorDetail = "";
-      if (nextDataMatch) {
-        try {
-          errorDetail = JSON.parse(nextDataMatch[1])?.err?.message;
-        } catch {
-          // ignore invalid JSON
-        }
-      }
-      if (!errorDetail && digestMatch) {
-        errorDetail = `digest: ${digestMatch[1]}`;
-      }
-      if (!errorDetail) {
-        errorDetail = html.substring(0, 500);
-      }
-      const recentOutput = serverOutput.slice(-1000);
-      const recentErrors = serverErrors.slice(-1000);
-      throw new Error(
-        `Editor page returned ${res.status}: ${errorDetail}\n\nServer stdout:\n${recentOutput}\n\nServer stderr:\n${recentErrors}`,
-      );
-    }
-
+    expect(
+      response.status,
+      `${html.slice(0, 500)}\n${recentServerOutput()}`,
+    ).toBe(200);
     expect(html).toContain("BlockNote Editor Test");
     expect(html).toContain("editor-wrapper");
   }, 30_000);
