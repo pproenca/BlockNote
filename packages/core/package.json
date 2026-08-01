@@ -42,6 +42,11 @@
       "import": "./dist/blocknote.js",
       "require": "./dist/blocknote.cjs"
     },
+    "./detect-markdown": {
+      "types": "./types/src/api/parsers/markdown/detectMarkdown.d.ts",
+      "import": "./dist/detect-markdown.js",
+      "require": "./dist/detect-markdown.cjs"
+    },
     "./style.css": {
       "import": "./dist/style.css",
       "require": "./dist/style.css",

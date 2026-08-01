@@ -29,6 +29,10 @@ export default defineConfig({
       entry: {
         blocknote: path.resolve(__dirname, "src/index.ts"),
         comments: path.resolve(__dirname, "src/comments/index.ts"),
+        "detect-markdown": path.resolve(
+          __dirname,
+          "src/api/parsers/markdown/detectMarkdown.ts",
+        ),
         blocks: path.resolve(__dirname, "src/blocks/index.ts"),
         locales: path.resolve(__dirname, "src/i18n/index.ts"),
         extensions: path.resolve(__dirname, "src/extensions/index.ts"),
