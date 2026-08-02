@@ -45,12 +45,11 @@ export * from "./util/expandToWords.js";
 export * from "./util/string.js";
 export * from "./util/table.js";
 export * from "./util/typescript.js";
-export {
-  SuggestionsExtension,
-  type BlockNoteSuggestion,
-  type BlockNoteSuggestionKind,
-  type BlockNoteSuggestionsExtension,
-  type BlockNoteSuggestionStatus,
+export type {
+  BlockNoteSuggestion,
+  BlockNoteSuggestionKind,
+  BlockNoteSuggestionsExtension,
+  BlockNoteSuggestionStatus,
 } from "./y/extensions/Suggestions.js";
 
 export type { CodeBlockOptions } from "./blocks/Code/block.js";

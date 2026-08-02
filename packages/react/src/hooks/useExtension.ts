@@ -1,8 +1,9 @@
 import {
   BlockNoteEditor,
   createStore,
+  type AnyExtensionFactory,
   Extension,
-  ExtensionFactory,
+  type ExtensionInstanceFromFactory,
 } from "@blocknote/core";
 import { useStore } from "@tanstack/react-store";
 import { useBlockNoteEditor } from "./useBlockNoteEditor.js";
@@ -13,12 +14,12 @@ type Store<T> = ReturnType<typeof createStore<T>>;
  * Use an extension instance
  */
 export function useExtension<
-  const T extends ExtensionFactory | Extension | string,
+  const T extends AnyExtensionFactory | Extension | string,
 >(
   plugin: T,
   ctx?: { editor?: BlockNoteEditor<any, any, any> },
-): T extends ExtensionFactory
-  ? NonNullable<ReturnType<ReturnType<T>>>
+): T extends AnyExtensionFactory
+  ? NonNullable<ExtensionInstanceFromFactory<T>>
   : T extends string
     ? Extension
     : T extends Extension
@@ -42,8 +43,10 @@ type ExtractStore<T> = T extends Store<infer U> ? U : never;
  * Use the state of an extension
  */
 export function useExtensionState<
-  T extends ExtensionFactory | Extension,
-  TExtension = T extends ExtensionFactory ? ReturnType<ReturnType<T>> : T,
+  T extends AnyExtensionFactory | Extension,
+  TExtension = T extends AnyExtensionFactory
+    ? ExtensionInstanceFromFactory<T>
+    : T,
   TStore = TExtension extends { store: Store<any> }
     ? TExtension["store"]
     : never,
@@ -56,7 +59,7 @@ export function useExtensionState<
   },
 ): TSelected {
   const extension = useExtension(
-    plugin as ExtensionFactory | Extension | string,
+    plugin as AnyExtensionFactory | Extension | string,
     ctx,
   );
   const { store } = extension;
