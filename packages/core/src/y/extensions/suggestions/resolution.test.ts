@@ -4,10 +4,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Y from "@y/y";
 
+import { BlockNoteError } from "../../../platform/BlockNoteError.js";
 import {
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
-  executeNativeSuggestionReviews,
   setNativeSuggestionsResolutionPhaseHook,
 } from "./native.js";
 import {
@@ -16,15 +16,20 @@ import {
   LEDGER_NAMES,
   NATIVE_SUGGESTION_LIMITS,
   rangeClaimId,
+  type NativeIdRange,
+  type NativeSuggestionRecord,
 } from "./model.js";
 import {
   cloneDoc,
   createEditor,
   createFixture,
   docs,
+  executeNativeReviewsForTest,
   insertText,
+  mintNativeReviewPermitForTest,
   pending,
   readBaseText,
+  revokeNativeReviewPermitForTest,
   setText,
   suggestions,
   syncDocs,
@@ -32,7 +37,362 @@ import {
   uuidFor,
 } from "./test-fixture.js";
 
+function itemsForRanges(doc: Y.Doc, ranges: readonly NativeIdRange[]) {
+  return [...doc.store.clients.values()].flat().filter((struct) => {
+    if (!(struct instanceof Y.Item)) {
+      return false;
+    }
+    return ranges.some(
+      (range) =>
+        range.client === struct.id.client &&
+        struct.id.clock < range.clock + range.length &&
+        range.clock < struct.id.clock + struct.length,
+    );
+  });
+}
+
+function hasDeletedPayload(doc: Y.Doc, ranges: readonly NativeIdRange[]) {
+  return itemsForRanges(doc, ranges).some(
+    (item) => item.content instanceof Y.ContentDeleted,
+  );
+}
+
+function splitContentAndLedgerUpdate(
+  update: Uint8Array,
+  record: NativeSuggestionRecord,
+) {
+  const all = Y.createContentIdsFromUpdate(update);
+  const ledgerIds = Y.createContentIds(
+    Y.diffIdSet(all.inserts, record.contentIds.inserts),
+    Y.diffIdSet(all.deletes, record.contentIds.deletes),
+  );
+  return {
+    content: Y.intersectUpdateWithContentIds(update, record.contentIds),
+    ledger: Y.intersectUpdateWithContentIds(update, ledgerIds),
+  };
+}
+
 describe("suggestion resolution", () => {
+  it("rejects a forged review permit before any mutation", async () => {
+    const { baseDoc, suggestionDoc, editor } = createFixture(
+      "hello world",
+      "alice",
+      { executeReviews: false },
+    );
+    suggestions(editor).enableSuggestions();
+    setText(editor, "hello");
+    const id = pending(editor)[0]!.id;
+    await suggestions(editor).reject(id);
+    const beforeBase = Y.encodeStateAsUpdate(baseDoc);
+    const beforeSuggestion = Y.encodeStateAsUpdate(suggestionDoc);
+    let failure: unknown;
+
+    try {
+      executeNativeReviewsForTest(editor, { leaseId: uuidFor(10) });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(Y.encodeStateAsUpdate(baseDoc)).toEqual(beforeBase);
+    expect(Y.encodeStateAsUpdate(suggestionDoc)).toEqual(beforeSuggestion);
+    expect(suggestionDoc.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
+  });
+
+  it("accepts one test permit and rejects reused or revoked permits", async () => {
+    const { baseDoc, suggestionDoc, editor } = createFixture("a", "alice", {
+      executeReviews: false,
+    });
+    suggestions(editor).enableSuggestions();
+    insertText(editor, textEnd(editor), "X");
+    const id = pending(editor)[0]!.id;
+    await suggestions(editor).reject(id);
+    const permit = mintNativeReviewPermitForTest();
+    const revoked = mintNativeReviewPermitForTest();
+
+    executeNativeReviewsForTest(editor, permit);
+    const beforeBase = Y.encodeStateAsUpdate(baseDoc);
+    const beforeBaseVector = Y.encodeStateVector(baseDoc);
+    const beforeSuggestion = Y.encodeStateAsUpdate(suggestionDoc);
+    const beforeSuggestionVector = Y.encodeStateVector(suggestionDoc);
+    const ledger = getLedgerTypes(suggestionDoc);
+    const beforeDispositions = ledger.dispositions.attrSize;
+    const beforeReceipts = ledger.receipts.attrSize;
+    let baseUpdates = 0;
+    let suggestionUpdates = 0;
+    const countBaseUpdate = () => {
+      baseUpdates += 1;
+    };
+    const countSuggestionUpdate = () => {
+      suggestionUpdates += 1;
+    };
+    baseDoc.on("update", countBaseUpdate);
+    suggestionDoc.on("update", countSuggestionUpdate);
+    let reusedFailure: unknown;
+    try {
+      executeNativeReviewsForTest(editor, permit);
+    } catch (error) {
+      reusedFailure = error;
+    }
+    const updatesAfterReuse = { baseUpdates, suggestionUpdates };
+    revokeNativeReviewPermitForTest(revoked);
+    let revokedFailure: unknown;
+    try {
+      executeNativeReviewsForTest(editor, revoked);
+    } catch (error) {
+      revokedFailure = error;
+    }
+    baseDoc.off("update", countBaseUpdate);
+    suggestionDoc.off("update", countSuggestionUpdate);
+
+    expect(reusedFailure).toBeInstanceOf(Error);
+    expect(revokedFailure).toBeInstanceOf(Error);
+    expect(updatesAfterReuse).toEqual({ baseUpdates: 0, suggestionUpdates: 0 });
+    expect({ baseUpdates, suggestionUpdates }).toEqual({
+      baseUpdates: 0,
+      suggestionUpdates: 0,
+    });
+    expect(Y.encodeStateAsUpdate(baseDoc)).toEqual(beforeBase);
+    expect(Y.encodeStateVector(baseDoc)).toEqual(beforeBaseVector);
+    expect(Y.encodeStateAsUpdate(suggestionDoc)).toEqual(beforeSuggestion);
+    expect(Y.encodeStateVector(suggestionDoc)).toEqual(beforeSuggestionVector);
+    expect(ledger.dispositions.attrSize).toBe(beforeDispositions);
+    expect(ledger.receipts.attrSize).toBe(beforeReceipts);
+  });
+
+  it.each([
+    ["deletion", "hello world", "hello"],
+    ["replacement", "hello world", "hello universe"],
+  ] as const)(
+    "rejects a %s after an encode and gc-enabled reload",
+    async (_kind, initial, proposed) => {
+      const source = createFixture(initial);
+      suggestions(source.editor).enableSuggestions();
+      setText(source.editor, proposed);
+      const id = pending(source.editor)[0]!.id;
+      const sourceRecord = getNativeSuggestionRecords(
+        getNativeSuggestionsBinding(source.editor)!,
+      ).get(id)!;
+      const authorityBase = cloneDoc(source.baseDoc);
+      const authoritySuggestion = cloneDoc(source.suggestionDoc, {
+        isSuggestionDoc: true,
+      });
+      expect(authoritySuggestion.gc).toBe(true);
+      expect(
+        hasDeletedPayload(authoritySuggestion, sourceRecord.deleteRanges),
+      ).toBe(true);
+      const authority = createEditor(authorityBase, {
+        suggestionDoc: authoritySuggestion,
+        renderer: Y.createDiffRenderer(authorityBase, authoritySuggestion, {
+          attrs: new Y.Attributions(),
+        }),
+      });
+
+      await suggestions(authority).reject(id);
+
+      expect(readBaseText(authorityBase)).toBe(initial);
+      expect(readBaseText(authoritySuggestion)).toBe(initial);
+    },
+  );
+
+  it.each([
+    ["deletion", "hello world", "hello"],
+    ["replacement", "hello world", "hello universe"],
+  ] as const)(
+    "publishes a %s and its claims in one gc-enabled update",
+    async (_kind, initial, proposed) => {
+      const source = createFixture(initial);
+      suggestions(source.editor).enableSuggestions();
+      const authorityBase = cloneDoc(source.baseDoc);
+      const authoritySuggestion = cloneDoc(source.suggestionDoc, {
+        isSuggestionDoc: true,
+      });
+      const authority = createEditor(authorityBase, {
+        suggestionDoc: authoritySuggestion,
+        renderer: Y.createDiffRenderer(authorityBase, authoritySuggestion, {
+          attrs: new Y.Attributions(),
+        }),
+      });
+      const updates: Uint8Array[] = [];
+      const capture = (update: Uint8Array) => updates.push(update);
+      source.suggestionDoc.on("update", capture);
+
+      setText(source.editor, proposed);
+      source.suggestionDoc.off("update", capture);
+      const id = pending(source.editor)[0]!.id;
+      expect(updates).toHaveLength(1);
+
+      Y.applyUpdate(authoritySuggestion, updates[0]!);
+      expect(pending(authority).map((suggestion) => suggestion.id)).toContain(
+        id,
+      );
+      await suggestions(authority).reject(id);
+
+      expect(readBaseText(authorityBase)).toBe(initial);
+      expect(readBaseText(authoritySuggestion)).toBe(initial);
+    },
+  );
+
+  it.each([
+    ["deletion", "hello world", "hello"],
+    ["replacement", "hello world", "hello universe"],
+  ] as const)(
+    "recovers a %s from hostile content-first transport",
+    async (_kind, initial, proposed) => {
+      const source = createFixture(initial);
+      suggestions(source.editor).enableSuggestions();
+      const authorityBase = cloneDoc(source.baseDoc);
+      const authoritySuggestion = cloneDoc(source.suggestionDoc, {
+        isSuggestionDoc: true,
+      });
+      const authority = createEditor(authorityBase, {
+        suggestionDoc: authoritySuggestion,
+        renderer: Y.createDiffRenderer(authorityBase, authoritySuggestion, {
+          attrs: new Y.Attributions(),
+        }),
+      });
+      const before = Y.encodeStateVector(source.suggestionDoc);
+
+      setText(source.editor, proposed);
+      const id = pending(source.editor)[0]!.id;
+      const record = getNativeSuggestionRecords(
+        getNativeSuggestionsBinding(source.editor)!,
+      ).get(id)!;
+      const update = Y.encodeStateAsUpdate(source.suggestionDoc, before);
+      const frames = splitContentAndLedgerUpdate(update, record);
+
+      Y.applyUpdate(authoritySuggestion, frames.content);
+      expect(authoritySuggestion.get(LEDGER_NAMES.ranges).attrSize).toBe(0);
+      expect(hasDeletedPayload(authoritySuggestion, record.deleteRanges)).toBe(
+        true,
+      );
+      Y.applyUpdate(authoritySuggestion, frames.ledger);
+      expect(pending(authority).map((suggestion) => suggestion.id)).toContain(
+        id,
+      );
+      await suggestions(authority).reject(id);
+
+      expect(readBaseText(authorityBase)).toBe(initial);
+      expect(readBaseText(authoritySuggestion)).toBe(initial);
+    },
+  );
+
+  it("fails atomically when the canonical base preimage is missing", async () => {
+    const source = createFixture("hello world", "alice", {
+      executeReviews: false,
+    });
+    suggestions(source.editor).enableSuggestions();
+    setText(source.editor, "hello");
+    const id = pending(source.editor)[0]!.id;
+    await suggestions(source.editor).reject(id);
+    const record = getNativeSuggestionRecords(
+      getNativeSuggestionsBinding(source.editor)!,
+    ).get(id)!;
+    const authorityBase = new Y.Doc();
+    docs.push(authorityBase);
+    expect(itemsForRanges(authorityBase, record.deleteRanges)).toHaveLength(0);
+    const authoritySuggestion = cloneDoc(source.suggestionDoc, {
+      isSuggestionDoc: true,
+    });
+    expect(authoritySuggestion.gc).toBe(true);
+    expect(hasDeletedPayload(authoritySuggestion, record.deleteRanges)).toBe(
+      true,
+    );
+    const authority = createEditor(authorityBase, {
+      suggestionDoc: authoritySuggestion,
+      renderer: Y.createDiffRenderer(authorityBase, authoritySuggestion, {
+        attrs: new Y.Attributions(),
+      }),
+      executeReviews: false,
+    });
+    const beforeBase = Y.encodeStateAsUpdate(authorityBase);
+    const beforeBaseVector = Y.encodeStateVector(authorityBase);
+    const beforeSuggestion = Y.encodeStateAsUpdate(authoritySuggestion);
+    const beforeSuggestionVector = Y.encodeStateVector(authoritySuggestion);
+    const beforePmText = authority.prosemirrorState.doc.textContent;
+    const ledger = getLedgerTypes(authoritySuggestion);
+    const beforeDispositions = ledger.dispositions.attrSize;
+    const beforeReceipts = ledger.receipts.attrSize;
+    let baseUpdates = 0;
+    let suggestionUpdates = 0;
+    const countBaseUpdate = () => {
+      baseUpdates += 1;
+    };
+    const countSuggestionUpdate = () => {
+      suggestionUpdates += 1;
+    };
+    authorityBase.on("update", countBaseUpdate);
+    authoritySuggestion.on("update", countSuggestionUpdate);
+    let failure: unknown;
+
+    try {
+      executeNativeReviewsForTest(authority, mintNativeReviewPermitForTest());
+    } catch (error) {
+      failure = error;
+    }
+    authorityBase.off("update", countBaseUpdate);
+    authoritySuggestion.off("update", countSuggestionUpdate);
+
+    expect(failure).toBeInstanceOf(BlockNoteError);
+    expect(failure).toMatchObject({
+      code: "invalid-document",
+      message: "Suggestion preimage is unavailable",
+      retryable: false,
+    });
+    expect({ baseUpdates, suggestionUpdates }).toEqual({
+      baseUpdates: 0,
+      suggestionUpdates: 0,
+    });
+    expect(Y.encodeStateAsUpdate(authorityBase)).toEqual(beforeBase);
+    expect(Y.encodeStateVector(authorityBase)).toEqual(beforeBaseVector);
+    expect(Y.encodeStateAsUpdate(authoritySuggestion)).toEqual(
+      beforeSuggestion,
+    );
+    expect(Y.encodeStateVector(authoritySuggestion)).toEqual(
+      beforeSuggestionVector,
+    );
+    expect(authority.prosemirrorState.doc.textContent).toBe(beforePmText);
+    expect(ledger.dispositions.attrSize).toBe(beforeDispositions);
+    expect(ledger.receipts.attrSize).toBe(beforeReceipts);
+  });
+
+  it("keeps the first unresolved intent without emitting retry updates", async () => {
+    const { suggestionDoc, editor } = createFixture("a", "alice", {
+      executeReviews: false,
+    });
+    suggestions(editor).enableSuggestions();
+    insertText(editor, textEnd(editor), "X");
+    const id = pending(editor)[0]!.id;
+
+    await suggestions(editor).reject(id);
+    const first = getNativeSuggestionRecords(
+      getNativeSuggestionsBinding(editor)!,
+    ).get(id)!;
+    const beforeVector = Y.encodeStateVector(suggestionDoc);
+    const beforeState = Y.encodeStateAsUpdate(suggestionDoc);
+    let updates = 0;
+    const countUpdate = () => {
+      updates += 1;
+    };
+    suggestionDoc.on("update", countUpdate);
+    await suggestions(editor).reject(id);
+    await suggestions(editor).accept(id);
+    await suggestions(editor).reject(id);
+    suggestionDoc.off("update", countUpdate);
+
+    expect(updates).toBe(0);
+    expect(Y.encodeStateVector(suggestionDoc)).toEqual(beforeVector);
+    expect(Y.encodeStateAsUpdate(suggestionDoc)).toEqual(beforeState);
+    expect(suggestionDoc.get(LEDGER_NAMES.dispositions).attrSize).toBe(1);
+    expect(
+      getNativeSuggestionRecords(getNativeSuggestionsBinding(editor)!).get(id),
+    ).toMatchObject({
+      decisionId: first.decisionId,
+      decisionStatus: "rejected",
+      hasExecution: false,
+    });
+  });
+
   it.each([
     ["deletion", "hello world", "hello"],
     ["replacement", "hello world", "hello universe"],
@@ -143,10 +503,7 @@ describe("suggestion resolution", () => {
     expect(suggestionA.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
     expect(suggestionB.get(LEDGER_NAMES.receipts).attrSize).toBe(0);
 
-    executeNativeSuggestionReviews(
-      getNativeSuggestionsBinding(editorA)!,
-      uuidFor(10),
-    );
+    executeNativeReviewsForTest(editorA, mintNativeReviewPermitForTest());
     syncDocs(baseA, baseB);
     syncDocs(suggestionA, suggestionB);
     const terminal = suggestions(editorA).store.get()[0]!;

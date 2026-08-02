@@ -6,6 +6,7 @@ import { SuggestionsExtension } from "../Suggestions.js";
 import { withCollaboration } from "../index.js";
 import { findSuggestionRanges } from "./analysis.js";
 import {
+  executeNativeSuggestionReviews,
   getNativeSuggestionRecords,
   getNativeSuggestionsBinding,
   setNativeSuggestionsLocalExecutor,
@@ -61,6 +62,7 @@ export function createEditor(
 export function createFixture(
   initial: string,
   actorId: string | undefined = "alice",
+  options: { executeReviews?: boolean } = {},
 ) {
   const baseDoc = new Y.Doc();
   const suggestionDoc = new Y.Doc({ isSuggestionDoc: true });
@@ -74,10 +76,31 @@ export function createFixture(
     suggestionDoc,
     renderer,
     actorId,
+    executeReviews: options.executeReviews,
   });
   setText(editor, initial);
   Y.applyUpdate(suggestionDoc, Y.encodeStateAsUpdate(baseDoc));
   return { baseDoc, suggestionDoc, renderer, editor };
+}
+
+let reviewPermitSequence = 700_000;
+
+export function mintNativeReviewPermitForTest() {
+  reviewPermitSequence += 1;
+  return uuidFor(reviewPermitSequence) as unknown;
+}
+
+export function revokeNativeReviewPermitForTest(permit: unknown) {
+  void permit;
+}
+
+export function executeNativeReviewsForTest(editor: Editor, permit: unknown) {
+  return (
+    executeNativeSuggestionReviews as unknown as (
+      binding: NonNullable<ReturnType<typeof getNativeSuggestionsBinding>>,
+      permit: unknown,
+    ) => void
+  )(getNativeSuggestionsBinding(editor)!, permit);
 }
 
 export function cloneDoc(

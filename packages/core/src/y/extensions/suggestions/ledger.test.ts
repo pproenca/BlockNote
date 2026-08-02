@@ -15,6 +15,7 @@ import {
   NATIVE_SUGGESTION_LIMITS,
   rangeClaimId,
   rangesFromIdSet,
+  type NativeIdRange,
 } from "./model.js";
 import {
   cloneDoc,
@@ -34,6 +35,36 @@ import {
 } from "./test-fixture.js";
 
 describe("suggestion ledger", () => {
+  const scopedItems = (doc: Y.Doc) => {
+    const scope = doc.get("doc");
+    return [...doc.store.clients.values()]
+      .flat()
+      .filter(
+        (struct): struct is Y.Item =>
+          struct instanceof Y.Item && Y.isParentOf(scope, struct),
+      );
+  };
+
+  const itemsForRanges = (doc: Y.Doc, ranges: readonly NativeIdRange[]) =>
+    scopedItems(doc).filter((item) =>
+      ranges.some(
+        (range) =>
+          range.client === item.id.client &&
+          item.id.clock < range.clock + range.length &&
+          range.clock < item.id.clock + item.length,
+      ),
+    );
+
+  const seedRangeSlots = (doc: Y.Doc, count: number) => {
+    const ranges = doc.get(LEDGER_NAMES.ranges);
+    doc.transact(() => {
+      for (let index = 0; index < count; index += 1) {
+        ranges.setAttr(`hostile-range-${index}`, null);
+      }
+    });
+    return ranges;
+  };
+
   it("round-trips deterministic composite range claim keys", () => {
     const suggestionId = uuidFor(1);
     const range = { client: 7, clock: 11, length: 13 };
@@ -48,6 +79,14 @@ describe("suggestion ledger", () => {
     expect(key).toBe(`${suggestionId}/insert/7/11/13`);
     expect(isRangeClaim(key, claim)).toBe(true);
     expect(isRangeClaim(suggestionId, claim)).toBe(false);
+  });
+
+  it("uses a distinct bumped execution ledger", () => {
+    expect(LEDGER_NAMES).toHaveProperty(
+      "executions",
+      "__blocknote_suggestions_v3_executions",
+    );
+    expect(LEDGER_NAMES).not.toHaveProperty("intents");
   });
 
   it("coalesces adjacent same-actor keystrokes into one persisted suggestion", async () => {
@@ -462,6 +501,158 @@ describe("suggestion ledger", () => {
     expect(headers.attrSize).toBe(NATIVE_SUGGESTION_LIMITS.maxRecords);
     expect(suggestionDoc.get(LEDGER_NAMES.ranges).attrSize).toBe(0);
   });
+
+  it("uses the last range slot for one large contiguous edit", () => {
+    const { suggestionDoc, editor } = createFixture("a");
+    suggestions(editor).enableSuggestions();
+    const remaining = 1;
+    const ranges = seedRangeSlots(
+      suggestionDoc,
+      NATIVE_SUGGESTION_LIMITS.maxTotalRanges - remaining,
+    );
+    const beforeRanges = ranges.attrSize;
+
+    insertText(
+      editor,
+      textEnd(editor),
+      "X".repeat(NATIVE_SUGGESTION_LIMITS.maxTotalRanges + 1),
+    );
+
+    expect(pending(editor)).toHaveLength(1);
+    expect(suggestionDoc.get(LEDGER_NAMES.headers).attrSize).toBe(1);
+    expect(ranges.attrSize - beforeRanges).toBe(1);
+    expect(ranges.attrSize).toBe(NATIVE_SUGGESTION_LIMITS.maxTotalRanges);
+  });
+
+  it("rejects a two-client deletion when only one range slot remains", () => {
+    const { baseDoc, suggestionDoc, editor } = createFixture("a");
+    const peerDoc = cloneDoc(baseDoc);
+    const peer = createEditor(peerDoc);
+    insertText(peer, textEnd(peer), "b");
+    syncDocs(baseDoc, peerDoc);
+    expect(editor.prosemirrorState.doc.textContent).toBe("ab");
+    suggestions(editor).enableSuggestions();
+    const proposedClients = new Set(
+      scopedItems(suggestionDoc)
+        .filter(
+          (item) => !item.deleted && item.content instanceof Y.ContentString,
+        )
+        .map((item) => item.id.client),
+    );
+    expect(proposedClients.size).toBeGreaterThanOrEqual(2);
+    const remaining = 1;
+    const ranges = seedRangeSlots(
+      suggestionDoc,
+      NATIVE_SUGGESTION_LIMITS.maxTotalRanges - remaining,
+    );
+    const beforeBase = Y.encodeStateVector(baseDoc);
+    const beforeSuggestionState = Y.encodeStateAsUpdate(suggestionDoc);
+    const beforeSuggestion = Y.encodeStateVector(suggestionDoc);
+    let updates = 0;
+    const countUpdate = () => {
+      updates += 1;
+    };
+    suggestionDoc.on("update", countUpdate);
+    let failure: unknown;
+
+    try {
+      const to = textEnd(editor);
+      editor.transact((transaction) => transaction.delete(to - 2, to));
+    } catch (error) {
+      failure = error;
+    }
+    suggestionDoc.off("update", countUpdate);
+
+    expect(failure).toBeInstanceOf(BlockNoteError);
+    expect(failure).toMatchObject({ code: "document-too-large" });
+    expect(updates).toBe(0);
+    expect(editor.prosemirrorState.doc.textContent).toBe("ab");
+    expect(readBaseText(baseDoc)).toBe("ab");
+    expect(Y.encodeStateVector(baseDoc)).toEqual(beforeBase);
+    expect(Y.encodeStateAsUpdate(suggestionDoc)).toEqual(beforeSuggestionState);
+    expect(Y.encodeStateVector(suggestionDoc)).toEqual(beforeSuggestion);
+    expect(ranges.attrSize).toBe(
+      NATIVE_SUGGESTION_LIMITS.maxTotalRanges - remaining,
+    );
+  });
+
+  it.each(["terminal", "orphaned", "quarantined"] as const)(
+    "preserves foreign keep ownership through %s cleanup",
+    async (scenario) => {
+      const { suggestionDoc, editor } = createFixture("hello world");
+      suggestions(editor).enableSuggestions();
+      setText(editor, "hello");
+      const id = pending(editor)[0]!.id;
+      const record = getNativeSuggestionRecords(
+        getNativeSuggestionsBinding(editor)!,
+      ).get(id)!;
+      const foreign = itemsForRanges(suggestionDoc, record.deleteRanges);
+      expect(foreign.length).toBeGreaterThan(0);
+      for (const item of foreign) {
+        item.keep = true;
+      }
+
+      if (scenario === "terminal") {
+        await suggestions(editor).reject(id);
+      } else {
+        const headers = suggestionDoc.get(LEDGER_NAMES.headers);
+        suggestionDoc.transact(() => {
+          if (scenario === "orphaned") {
+            headers.deleteAttr(id);
+            return;
+          }
+          for (
+            let index = 1;
+            index <= NATIVE_SUGGESTION_LIMITS.maxRecords;
+            index += 1
+          ) {
+            const hostileId = uuidFor(index);
+            headers.setAttr(hostileId, {
+              version: 2,
+              id: hostileId,
+              authorId: "hostile",
+              creatorId: uuidFor(999_999),
+            });
+          }
+        });
+      }
+
+      expect(foreign.every((item) => item.keep)).toBe(true);
+    },
+  );
+
+  it.each(["orphaned", "quarantined"] as const)(
+    "releases suggestion-owned keep for %s",
+    async (scenario) => {
+      const { suggestionDoc, editor } = createFixture("hello world");
+      suggestions(editor).enableSuggestions();
+      setText(editor, "hello");
+      const id = pending(editor)[0]!.id;
+
+      const headers = suggestionDoc.get(LEDGER_NAMES.headers);
+      suggestionDoc.transact(() => {
+        if (scenario === "orphaned") {
+          headers.deleteAttr(id);
+          return;
+        }
+        for (
+          let index = 1;
+          index <= NATIVE_SUGGESTION_LIMITS.maxRecords;
+          index += 1
+        ) {
+          const hostileId = uuidFor(index);
+          headers.setAttr(hostileId, {
+            version: 2,
+            id: hostileId,
+            authorId: "hostile",
+            creatorId: uuidFor(999_999),
+          });
+        }
+      });
+
+      expect(scopedItems(suggestionDoc).every((item) => !item.keep)).toBe(true);
+    },
+  );
 
   it("starts another tracked record when a continuation record is full", () => {
     const { suggestionDoc, editor } = createFixture("a");
