@@ -29,10 +29,10 @@ jobs:
           persist-credentials: false
 
       - id: release
-        name: Require tagged commit on main
+        name: Require tagged commit on master
         run: |
           release_commit=$(git rev-parse HEAD)
-          git merge-base --is-ancestor "$release_commit" origin/main
+          git merge-base --is-ancestor "$release_commit" origin/master
           echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
 
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
