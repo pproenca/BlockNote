@@ -21,6 +21,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitestSetup.ts"],
+    server: {
+      deps: {
+        inline: ["@y/prosemirror"],
+      },
+    },
   },
   plugins: [webpackStats()],
   build: {

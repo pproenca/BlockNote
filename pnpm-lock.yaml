@@ -5012,15 +5012,6 @@ importers:
       '@tiptap/pm':
         specifier: ^3.0.0
         version: 3.22.4
-      '@y/prosemirror':
-        specifier: 2.0.0-6
-        version: 2.0.0-6(patch_hash=e49b17b47e301dd138d7e383a779a0e2125bf7f038e10e3c740e26b43d988776)(@y/protocols@1.0.6-rc.1(@y/y@14.0.0-rc.23))(prosemirror-model@1.25.4)(prosemirror-state@1.4.4)(prosemirror-view@1.41.8)
-      '@y/protocols':
-        specifier: ^1.0.6-rc.1
-        version: 1.0.6-rc.1(@y/y@14.0.0-rc.23)
-      '@y/y':
-        specifier: 14.0.0-rc.23
-        version: 14.0.0-rc.23
       emoji-mart:
         specifier: ^5.6.0
         version: 5.6.0
@@ -5049,6 +5040,15 @@ importers:
         specifier: ^1.41.4
         version: 1.41.8
     devDependencies:
+      '@y/prosemirror':
+        specifier: 2.0.0-6
+        version: 2.0.0-6(patch_hash=e49b17b47e301dd138d7e383a779a0e2125bf7f038e10e3c740e26b43d988776)(@y/protocols@1.0.6-rc.1(@y/y@14.0.0-rc.23))(prosemirror-model@1.25.4)(prosemirror-state@1.4.4)(prosemirror-view@1.41.8)
+      '@y/protocols':
+        specifier: ^1.0.6-rc.1
+        version: 1.0.6-rc.1(@y/y@14.0.0-rc.23)
+      '@y/y':
+        specifier: 14.0.0-rc.23
+        version: 14.0.0-rc.23
       jsdom:
         specifier: ^29.0.2
         version: 29.0.2(@noble/hashes@2.0.1)(canvas@3.1.0)

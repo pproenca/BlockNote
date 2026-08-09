@@ -19,6 +19,8 @@ import { createYjsVersioningAdapter } from "./Versioning.js";
  * Stores snapshots and their binary content in plain Maps.
  */
 function createInMemoryYjsEndpoints(): VersioningEndpoints<Y.Type, Uint8Array> {
+  let timestamp = Date.now();
+  const nextTimestamp = () => ++timestamp;
   const snapshots = new Map<
     string,
     {
@@ -35,11 +37,12 @@ function createInMemoryYjsEndpoints(): VersioningEndpoints<Y.Type, Uint8Array> {
     list: async () =>
       [...snapshots.values()].sort((a, b) => b.createdAt - a.createdAt),
     create: async (fragment, options) => {
+      const createdAt = nextTimestamp();
       const snapshot = {
         id: crypto.randomUUID(),
         name: options?.name,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt,
+        updatedAt: createdAt,
         restoredFromSnapshotId: options?.restoredFromSnapshot?.id
           ? String(options.restoredFromSnapshot.id)
           : undefined,
@@ -57,11 +60,12 @@ function createInMemoryYjsEndpoints(): VersioningEndpoints<Y.Type, Uint8Array> {
     },
     restore: async (fragment, snapshot) => {
       // Create backup
+      const backupCreatedAt = nextTimestamp();
       const backup = {
         id: crypto.randomUUID(),
         name: "Backup",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: backupCreatedAt,
+        updatedAt: backupCreatedAt,
       };
       contents.set(backup.id, Y.encodeStateAsUpdateV2(fragment.doc!));
       snapshots.set(backup.id, backup);
@@ -70,11 +74,12 @@ function createInMemoryYjsEndpoints(): VersioningEndpoints<Y.Type, Uint8Array> {
       const tempDoc = new Y.Doc();
       Y.applyUpdateV2(tempDoc, snapshotContent);
 
+      const restoredCreatedAt = nextTimestamp();
       const restored = {
         id: crypto.randomUUID(),
         name: "Restored Snapshot",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: restoredCreatedAt,
+        updatedAt: restoredCreatedAt,
         restoredFromSnapshotId: String(snapshot.id),
       };
       contents.set(restored.id, Y.encodeStateAsUpdateV2(tempDoc));
@@ -89,7 +94,7 @@ function createInMemoryYjsEndpoints(): VersioningEndpoints<Y.Type, Uint8Array> {
         throw new Error(`Snapshot ${String(snapshot.id)} not found`);
       }
       s.name = name;
-      s.updatedAt = Date.now();
+      s.updatedAt = nextTimestamp();
     },
   };
 }

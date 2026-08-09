@@ -131,7 +131,7 @@ function attributionSignature(inserts: Y.IdMap<any>, deletes: Y.IdMap<any>) {
         }
         return typeof attribute.val === "string"
           ? [["user", attribute.val]]
-          : [];
+          : [["invalid-role"]];
       });
       if (overlay.length > 0) {
         entries.push(
@@ -178,8 +178,11 @@ export function reconcileAttribution(
     records,
     "delete",
   );
-  binding.renderer.inserts = inserts;
-  binding.renderer.deletes = deletes;
+  const nextSignature = attributionSignature(inserts, deletes);
+  const attributionChanged = previousSignature !== nextSignature;
+  if (attributionChanged) {
+    binding.renderer.replaceAttributions({ inserts, deletes });
+  }
   state.claimed = Y.mergeIdSets(
     [...records.values()]
       .filter((record) => record.status === "pending")
@@ -188,10 +191,7 @@ export function reconcileAttribution(
         record.contentIds.deletes,
       ]),
   );
-  if (
-    !emitChange ||
-    previousSignature === attributionSignature(inserts, deletes)
-  ) {
+  if (!emitChange || !attributionChanged) {
     return;
   }
   const changed = Y.mergeIdSets([previousClaimed, state.claimed, legacy]);

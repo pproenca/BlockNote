@@ -20,7 +20,7 @@ describe("YjsThreadStore (@y/y v14)", () => {
     // Reset mocks and create fresh instances
     vi.clearAllMocks();
     mockUuidCounter = 0;
-    doc = new Y.Doc();
+    doc = new Y.Doc({ guid: "test-doc" });
     threadsYType = doc.get("threads");
 
     store = new YjsThreadStore(

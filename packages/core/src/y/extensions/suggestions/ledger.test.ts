@@ -32,6 +32,11 @@ import {
   uuidFor,
 } from "./test-fixture.js";
 
+type AttributionRange = Parameters<
+  Parameters<Y.IdMap<unknown>["forEach"]>[0]
+>[0];
+type AttributionValue = AttributionRange["attrs"][number];
+
 describe("suggestion ledger", () => {
   it("round-trips deterministic composite range claim keys", () => {
     const suggestionId = uuidFor(1);
@@ -287,17 +292,22 @@ describe("suggestion ledger", () => {
     expect(pending(editorB).map((item) => item.id)).toEqual([lowerId]);
     for (const renderer of [rendererA, rendererB]) {
       let sawAuthor = false;
-      renderer.inserts.forEach((range) => {
+      renderer.inserts.forEach((range: AttributionRange) => {
         const authors = range.attrs.filter(
-          (attribute) => attribute.name === "insert",
+          (attribute: AttributionValue) => attribute.name === "insert",
         );
-        sawAuthor ||= authors.some((attribute) => attribute.val === "alice");
+        sawAuthor ||= authors.some(
+          (attribute: AttributionValue) => attribute.val === "alice",
+        );
         expect(
-          authors.every((attribute) => typeof attribute.val === "string"),
+          authors.every(
+            (attribute: AttributionValue) => typeof attribute.val === "string",
+          ),
         ).toBe(true);
         expect(
           range.attrs.some(
-            (attribute) => attribute.name === "blocknoteSuggestionId",
+            (attribute: AttributionValue) =>
+              attribute.name === "blocknoteSuggestionId",
           ),
         ).toBe(false);
       });

@@ -55,9 +55,12 @@
   },
   "scripts": {
     "dev": "vp dev",
+    "build": "tsgo && vp build",
     "lint": "vp lint src",
     "test": "vp test --run",
+    "test:unit": "vp test --run",
     "test-watch": "vp test watch",
+    "typecheck": "tsgo --noEmit",
     "clean": "rimraf dist && rimraf types"
   },
   "dependencies": {

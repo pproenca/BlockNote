@@ -23,6 +23,11 @@ import {
   uuidFor,
 } from "./test-fixture.js";
 
+type AttributionRange = Parameters<
+  Parameters<Y.IdMap<unknown>["forEach"]>[0]
+>[0];
+type AttributionValue = AttributionRange["attrs"][number];
+
 function createAttributedTableFixture() {
   const baseDoc = new Y.Doc();
   const suggestionDoc = new Y.Doc({ isSuggestionDoc: true });
@@ -185,9 +190,9 @@ describe("suggestion attribution", () => {
     Y.applyUpdate(suggestionDoc, Y.encodeStateAsUpdate(hostile));
     let sawAuthor = false;
     const onChange = () => {
-      renderer.inserts.forEach((range) => {
+      renderer.inserts.forEach((range: AttributionRange) => {
         sawAuthor ||= range.attrs.some(
-          (attribute) =>
+          (attribute: AttributionValue) =>
             attribute.name === "insert" && attribute.val === "alice",
         );
       });
@@ -210,27 +215,36 @@ describe("suggestion attribution", () => {
     insertText(editor, textEnd(editor), "X");
     const binding = getNativeSuggestionsBinding(editor)!;
     const record = getNativeSuggestionRecords(binding).values().next().value!;
-    renderer.inserts = Y.createIdMapFromIdSet(record.contentIds.inserts, [
-      Y.createContentAttribute("insert", "alice"),
-    ]);
+    renderer.replaceAttributions({
+      inserts: Y.createIdMapFromIdSet(record.contentIds.inserts, [
+        Y.createContentAttribute("insert", "alice"),
+      ]),
+      deletes: renderer.deletes,
+    });
 
     reconcileAttribution(binding, new Map([[record.id, record]]), false);
-    const first = Y.encodeIdMap(renderer.inserts);
+    const recordAttributions = () =>
+      Y.intersectMaps<Y.IdMap<unknown>, Y.IdSet>(
+        renderer.inserts,
+        record.contentIds.inserts,
+      );
+    const first = Y.encodeIdMap(recordAttributions());
     reconcileAttribution(binding, new Map([[record.id, record]]), false);
 
-    renderer.inserts.forEach((range) => {
+    recordAttributions().forEach((range: AttributionRange) => {
       const roles = range.attrs.filter(
-        (attribute) => attribute.name === "insert",
+        (attribute: AttributionValue) => attribute.name === "insert",
       );
       expect(roles).toHaveLength(1);
       expect(roles[0]!.val).toBe("alice");
       expect(
         range.attrs.some(
-          (attribute) => attribute.name === "blocknoteSuggestionId",
+          (attribute: AttributionValue) =>
+            attribute.name === "blocknoteSuggestionId",
         ),
       ).toBe(false);
     });
-    expect(Y.encodeIdMap(renderer.inserts)).toEqual(first);
+    expect(Y.encodeIdMap(recordAttributions())).toEqual(first);
 
     let changes = 0;
     const onChange = () => {
@@ -252,10 +266,43 @@ describe("suggestion attribution", () => {
     renderer.off("change", onChange);
 
     expect(changes).toBe(1);
-    renderer.inserts.forEach((range) => {
+    recordAttributions().forEach((range: AttributionRange) => {
       expect(
-        range.attrs.filter((attribute) => attribute.name === "insert"),
+        range.attrs.filter(
+          (attribute: AttributionValue) => attribute.name === "insert",
+        ),
       ).toEqual([Y.createContentAttribute("insert", "bob")]);
+    });
+  });
+
+  it("removes malformed anonymous role attribution", () => {
+    const { renderer, editor } = createFixture("a");
+    suggestions(editor).enableSuggestions();
+    insertText(editor, textEnd(editor), "X");
+    const binding = getNativeSuggestionsBinding(editor)!;
+    const record = getNativeSuggestionRecords(binding).values().next().value!;
+    renderer.replaceAttributions({
+      inserts: Y.createIdMapFromIdSet(record.contentIds.inserts, [
+        Y.createContentAttribute("insert", { malformed: true }),
+      ]),
+      deletes: renderer.deletes,
+    });
+
+    reconcileAttribution(
+      binding,
+      new Map([[record.id, { ...record, authorId: null }]]),
+      false,
+    );
+
+    Y.intersectMaps<Y.IdMap<unknown>, Y.IdSet>(
+      renderer.inserts,
+      record.contentIds.inserts,
+    ).forEach((range: AttributionRange) => {
+      expect(
+        range.attrs.filter(
+          (attribute: AttributionValue) => attribute.name === "insert",
+        ),
+      ).toEqual([]);
     });
   });
 
@@ -332,10 +379,12 @@ describe("suggestion attribution", () => {
 
     expect(pending(editorMerged).length).toBeGreaterThanOrEqual(2);
     let maxRendererRoles = 0;
-    rendererMerged.inserts.forEach((range) => {
+    rendererMerged.inserts.forEach((range: AttributionRange) => {
       maxRendererRoles = Math.max(
         maxRendererRoles,
-        range.attrs.filter((attribute) => attribute.name === "insert").length,
+        range.attrs.filter(
+          (attribute: AttributionValue) => attribute.name === "insert",
+        ).length,
       );
     });
     expect(maxRendererRoles).toBe(1);
@@ -406,10 +455,12 @@ describe("suggestion attribution", () => {
     await Promise.resolve();
     await Promise.resolve();
     let maxRendererRoles = 0;
-    rendererMerged.deletes.forEach((range) => {
+    rendererMerged.deletes.forEach((range: AttributionRange) => {
       maxRendererRoles = Math.max(
         maxRendererRoles,
-        range.attrs.filter((attribute) => attribute.name === "delete").length,
+        range.attrs.filter(
+          (attribute: AttributionValue) => attribute.name === "delete",
+        ).length,
       );
     });
     expect(maxRendererRoles).toBe(1);
