@@ -1,13 +1,13 @@
 {
   "name": "@blocknote/ariakit",
-  "homepage": "https://github.com/TypeCellOS/BlockNote",
+  "homepage": "https://github.com/pproenca/BlockNote",
   "private": false,
   "sideEffects": [
     "*.css"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TypeCellOS/BlockNote.git",
+    "url": "git+https://github.com/pproenca/BlockNote.git",
     "directory": "packages/ariakit"
   },
   "license": "MPL-2.0",

@@ -49,7 +49,7 @@ body:
 
         Optional: If you can, provide a minimal online reproduction.
         You can use this starter sandbox:
-        https://stackblitz.com/github/TypeCellOS/BlockNote/tree/main/examples/01-basic/01-minimal?file=App.tsx
+        https://stackblitz.com/github/pproenca/BlockNote/tree/master/examples/01-basic/01-minimal?file=App.tsx
     validations:
       required: false
 

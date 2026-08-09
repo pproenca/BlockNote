@@ -1,11 +1,11 @@
 {
   "name": "@blocknote/xl-odt-exporter",
-  "homepage": "https://github.com/TypeCellOS/BlockNote",
+  "homepage": "https://github.com/pproenca/BlockNote",
   "private": false,
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TypeCellOS/BlockNote.git",
+    "url": "git+https://github.com/pproenca/BlockNote.git",
     "directory": "packages/xl-odt-exporter"
   },
   "license": "GPL-3.0 OR PROPRIETARY",

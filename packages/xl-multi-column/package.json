@@ -1,11 +1,11 @@
 {
   "name": "@blocknote/xl-multi-column",
-  "homepage": "https://github.com/TypeCellOS/BlockNote",
+  "homepage": "https://github.com/pproenca/BlockNote",
   "private": false,
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TypeCellOS/BlockNote.git",
+    "url": "git+https://github.com/pproenca/BlockNote.git",
     "directory": "packages/xl-multi-column"
   },
   "license": "GPL-3.0 OR PROPRIETARY",
