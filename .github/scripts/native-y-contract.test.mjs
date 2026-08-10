@@ -112,7 +112,7 @@ test("builds native Y before standalone package builds and typechecks", async ()
   for (const workflow of orchestratedBuilds) {
     const source = await readFile(path.join(root, workflow), "utf8");
     const install = source.indexOf("vp install");
-    const build = source.indexOf("run: pnpm run build\n", install);
+    const build = source.indexOf("run: vp run build\n", install);
 
     assert.ok(install >= 0, `${workflow} must install dependencies`);
     assert.ok(build > install, `${workflow} must use the sequenced root build`);
