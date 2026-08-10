@@ -79,6 +79,9 @@ describe("Docker e2e scripts", () => {
     expect(helper).not.toContain(
       "../../patches/@hocuspocus__provider@4.4.0.patch",
     );
+    expect(helper).not.toContain(
+      "../../patches/@hocuspocus__server@4.4.0.patch",
+    );
     expect(helper).toContain("while IFS= read -r file");
   });
 
@@ -92,6 +95,17 @@ describe("Docker e2e scripts", () => {
     expect(dockerfile).toContain("COPY patches ./patches");
     expect(dockerfile).not.toContain(
       "COPY --from=monorepo patches/@hocuspocus__provider@4.4.0.patch",
+    );
+    expect(dockerfile).not.toContain(
+      "COPY --from=monorepo patches/@hocuspocus__server@4.4.0.patch",
+    );
+
+    const workspace = readFileSync(
+      path.join(blockNoteRoot, "pnpm-workspace.yaml"),
+      "utf8",
+    );
+    expect(workspace).toContain(
+      '"@hocuspocus/server@4.4.0": patches/@hocuspocus__server@4.4.0.patch',
     );
   });
 

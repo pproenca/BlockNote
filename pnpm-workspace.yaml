@@ -36,6 +36,7 @@ allowBuilds:
   workerd: false
   leveldown: false
 patchedDependencies:
+  "@hocuspocus/server@4.4.0": patches/@hocuspocus__server@4.4.0.patch
   "@hocuspocus/provider@4.4.0": patches/@hocuspocus__provider@4.4.0.patch
   "@y/prosemirror@2.0.0-6": patches/@y__prosemirror@2.0.0-6.patch
 catalog:

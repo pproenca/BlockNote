@@ -35,6 +35,7 @@ overrides:
 
 patchedDependencies:
   '@hocuspocus/provider@4.4.0': 701cfa7e8f80ab6676a032f4b4516c92a00b7d35a3e1ca51348fd156fc6e371d
+  '@hocuspocus/server@4.4.0': 891ac23b0e1cd3466b9499bc982a11da3855563893fad5d35ef273b3561061f5
   '@y/prosemirror@2.0.0-6': 320bb2302614373f8ff70a3c815469a9a916e191a7ced09a8e3d34ac14deb051
 
 importers:
@@ -5311,7 +5312,7 @@ importers:
         version: link:../collaboration-server
       '@hocuspocus/server':
         specifier: catalog:collaboration
-        version: 4.4.0(y-protocols@1.0.7(yjs@13.6.30))(yjs@13.6.30)
+        version: 4.4.0(patch_hash=891ac23b0e1cd3466b9499bc982a11da3855563893fad5d35ef273b3561061f5)(y-protocols@1.0.7(yjs@13.6.30))(yjs@13.6.30)
       '@tiptap/pm':
         specifier: ^3.0.0
         version: 3.22.4
@@ -17585,7 +17586,7 @@ snapshots:
       y-protocols: 1.0.7(yjs@13.6.30)
       yjs: 13.6.30
 
-  '@hocuspocus/server@4.4.0(y-protocols@1.0.7(yjs@13.6.30))(yjs@13.6.30)':
+  '@hocuspocus/server@4.4.0(patch_hash=891ac23b0e1cd3466b9499bc982a11da3855563893fad5d35ef273b3561061f5)(y-protocols@1.0.7(yjs@13.6.30))(yjs@13.6.30)':
     dependencies:
       '@hocuspocus/common': 4.5.0
       async-mutex: 0.5.0
