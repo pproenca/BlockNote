@@ -163,42 +163,34 @@ await test("rejects manifest-defined publish behavior", async () => {
   );
 });
 
-await test("requires explicit runtime exports despite source sentinel spelling", async () => {
-  const root = await createPackageTree();
-  for (const source of [
-    "export {};\n",
-    "export { };\n",
-    "export type Placeholder = never;\n",
-    "const placeholder = true;\n",
-  ]) {
-    await writeFile(
-      path.join(root, "packages/collaboration/src/index.ts"),
-      source,
-    );
-    await assert.rejects(
-      validateReleaseEntrypoints({ root }),
-      /@blocknote\/collaboration has no required runtime export contract/,
-    );
-  }
+await test("requires a complete public import contract for all six packages", async () => {
+  await validateReleaseEntrypoints({ packages: downstreamPackages });
+
+  const broken = downstreamPackages.map((item, index) =>
+    index === 2 ? { ...item, publicImports: [] } : item,
+  );
+  await assert.rejects(
+    validateReleaseEntrypoints({ packages: broken }),
+    /has no public import contract/,
+  );
 });
 
-await test("accepts only complete, valid runtime export configuration", async () => {
-  const configured = downstreamPackages.map((packageDefinition) => ({
-    ...packageDefinition,
-    requiredRuntimeExports:
-      packageDefinition.requiredRuntimeExports.length > 0
-        ? packageDefinition.requiredRuntimeExports
-        : ["RuntimeContract"],
-  }));
-
-  await validateReleaseEntrypoints({ packages: configured });
+await test("rejects duplicate specifiers and blank export names", async () => {
+  const [core, ...rest] = downstreamPackages;
   await assert.rejects(
     validateReleaseEntrypoints({
       packages: [
-        { ...configured[0], requiredRuntimeExports: ["BlockNoteSchema", ""] },
+        {
+          ...core,
+          publicImports: [
+            { specifier: "@blocknote/core", exports: ["BlockNoteSchema"] },
+            { specifier: "@blocknote/core", exports: [""] },
+          ],
+        },
+        ...rest,
       ],
     }),
-    /invalid required runtime export contract/,
+    /invalid public import contract/,
   );
 });
 

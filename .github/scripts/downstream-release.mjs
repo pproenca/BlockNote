@@ -14,37 +14,94 @@ export const downstreamPackages = Object.freeze([
     directory: "packages/core",
     upstreamName: "@blocknote/core",
     downstreamName: "@pproenca/blocknote-core",
-    requiredRuntimeExports: ["BlockNoteSchema", "createBlockNoteDocument"],
+    publicImports: [
+      {
+        specifier: "@blocknote/core",
+        exports: ["createBlockNoteDocument", "createBlockNoteAccess"],
+      },
+      {
+        specifier: "@blocknote/core/persistence",
+        exports: ["blockNotePersistence"],
+      },
+    ],
   },
   {
     directory: "packages/collaboration",
     upstreamName: "@blocknote/collaboration",
     downstreamName: "@pproenca/blocknote-collaboration",
-    requiredRuntimeExports: [],
+    publicImports: [
+      {
+        specifier: "@blocknote/collaboration",
+        exports: ["createBlockNoteSession"],
+      },
+    ],
   },
   {
     directory: "packages/collaboration-server",
     upstreamName: "@blocknote/collaboration-server",
     downstreamName: "@pproenca/blocknote-collaboration-server",
-    requiredRuntimeExports: [],
+    publicImports: [
+      {
+        specifier: "@blocknote/collaboration-server",
+        exports: [
+          "createBlockNoteCollaboration",
+          "createInMemoryDocumentStore",
+        ],
+      },
+    ],
   },
   {
     directory: "packages/react",
     upstreamName: "@blocknote/react",
     downstreamName: "@pproenca/blocknote-react",
-    requiredRuntimeExports: ["createReactBlockSpec"],
+    publicImports: [
+      {
+        specifier: "@blocknote/react",
+        exports: [
+          "useCreateBlockNoteSession",
+          "BlockNoteSessionProvider",
+          "createBlockNoteCommentsController",
+        ],
+      },
+    ],
   },
   {
     directory: "packages/server-util",
     upstreamName: "@blocknote/server-util",
     downstreamName: "@pproenca/blocknote-server-util",
-    requiredRuntimeExports: ["ServerBlockNoteEditor"],
+    publicImports: [
+      {
+        specifier: "@blocknote/server-util",
+        exports: ["ServerBlockNoteEditor"],
+      },
+      {
+        specifier: "@blocknote/server-util/headless",
+        exports: ["createBlockNoteDocumentService"],
+      },
+      {
+        specifier: "@blocknote/server-util/collaboration",
+        exports: ["createBlockNoteCollaboration"],
+      },
+      {
+        specifier: "@blocknote/server-util/node",
+        exports: ["serveBlockNoteCollaboration"],
+      },
+    ],
   },
   {
     directory: "packages/test-utils",
     upstreamName: "@blocknote/test-utils",
     downstreamName: "@pproenca/blocknote-test-utils",
-    requiredRuntimeExports: [],
+    publicImports: [
+      {
+        specifier: "@blocknote/test-utils",
+        exports: [
+          "defineBlockNoteDocumentStoreContract",
+          "defineBlockNoteCommentsBehaviorFixtures",
+          "createBlockNoteCommentAnchorTestKeyRings",
+        ],
+      },
+    ],
   },
 ]);
 
@@ -77,23 +134,36 @@ export async function validateReleaseEntrypoints({
   packages = downstreamPackages,
 } = {}) {
   for (const packageDefinition of packages) {
-    const requiredExports = packageDefinition.requiredRuntimeExports;
+    const publicImports = packageDefinition.publicImports;
 
-    if (!Array.isArray(requiredExports) || requiredExports.length === 0) {
+    if (!Array.isArray(publicImports) || publicImports.length === 0) {
       throw new Error(
-        `${packageDefinition.upstreamName} has no required runtime export contract`,
+        `${packageDefinition.upstreamName} has no public import contract`,
       );
     }
 
-    if (
-      requiredExports.some(
-        (exportName) =>
-          typeof exportName !== "string" || exportName.trim() === "",
-      ) ||
-      new Set(requiredExports).size !== requiredExports.length
-    ) {
+    const specifiers = publicImports.map(({ specifier }) => specifier);
+    const invalid = publicImports.some(({ specifier, exports }) => {
+      if (
+        typeof specifier !== "string" ||
+        specifier.trim() === "" ||
+        !Array.isArray(exports) ||
+        exports.length === 0
+      ) {
+        return true;
+      }
+
+      return (
+        exports.some(
+          (exportName) =>
+            typeof exportName !== "string" || exportName.trim() === "",
+        ) || new Set(exports).size !== exports.length
+      );
+    });
+
+    if (invalid || new Set(specifiers).size !== specifiers.length) {
       throw new Error(
-        `${packageDefinition.upstreamName} has an invalid required runtime export contract`,
+        `${packageDefinition.upstreamName} has an invalid public import contract`,
       );
     }
   }
@@ -340,12 +410,9 @@ function consumerTarballPath(artifactDirectory, packageDefinition, release) {
   );
 }
 
-function createConsumerRuntimeProbe(release) {
-  const expectedExports = Object.fromEntries(
-    downstreamPackages.map(({ upstreamName, requiredRuntimeExports }) => [
-      upstreamName,
-      requiredRuntimeExports,
-    ]),
+function createConsumerRuntimeProbe() {
+  const publicImports = downstreamPackages.flatMap(
+    ({ publicImports: packageImports }) => packageImports,
   );
 
   return `
@@ -357,27 +424,20 @@ if ("window" in globalThis || "document" in globalThis) {
   throw new Error("Downstream consumer started with browser globals");
 }
 
-const packages = ${JSON.stringify(
-    downstreamPackages.map(({ upstreamName, downstreamName }) => ({
-      upstreamName,
-      downstreamName,
-      version: release.downstreamVersion,
-    })),
-  )};
-const expectedExports = ${JSON.stringify(expectedExports)};
+const publicImports = ${JSON.stringify(publicImports)};
 
-for (const packageDefinition of packages) {
-  const resolvedPath = fileURLToPath(import.meta.resolve(packageDefinition.upstreamName));
+for (const publicImport of publicImports) {
+  const resolvedPath = fileURLToPath(import.meta.resolve(publicImport.specifier));
   const parts = resolvedPath.split(path.sep);
 
   if (!parts.includes("node_modules") || parts.includes("packages")) {
-    throw new Error(packageDefinition.upstreamName + " resolved outside the installed consumer: " + resolvedPath);
+    throw new Error(publicImport.specifier + " resolved outside the installed consumer: " + resolvedPath);
   }
 
-  const imported = await import(packageDefinition.upstreamName);
-  for (const exportName of expectedExports[packageDefinition.upstreamName] ?? []) {
+  const imported = await import(publicImport.specifier);
+  for (const exportName of publicImport.exports) {
     if (!(exportName in imported)) {
-      throw new Error(packageDefinition.upstreamName + " is missing export " + exportName);
+      throw new Error(publicImport.specifier + " is missing export " + exportName);
     }
   }
 }
@@ -567,7 +627,7 @@ export async function createDownstreamConsumer({
     ),
     writeFile(
       path.join(consumerDirectory, "runtime.mjs"),
-      createConsumerRuntimeProbe(release),
+      createConsumerRuntimeProbe(),
     ),
     writeFile(
       path.join(consumerDirectory, "contract.mts"),
