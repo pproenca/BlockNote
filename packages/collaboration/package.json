@@ -45,13 +45,13 @@
     "clean": "rimraf dist && rimraf types"
   },
   "dependencies": {
-    "@blocknote/core": "workspace:^",
     "@hocuspocus/provider": "catalog:collaboration",
     "@y/protocols": "^1.0.6-rc.1",
     "@y/y": "14.0.0-rc.23",
     "y-indexeddb": "catalog:collaboration"
   },
   "devDependencies": {
+    "@blocknote/core": "workspace:^",
     "rimraf": "^5.0.10",
     "typescript": "^5.9.3",
     "vite-plus": "catalog:"

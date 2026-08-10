@@ -38,7 +38,7 @@
     "start": "vp run --filter @blocknote/example-editor preview",
     "test": "pnpm --pm-on-fail=ignore -r --filter \"@blocknote/*\" --filter \"docs\" --if-present run test",
     "format": "vp fmt",
-    "prepare": "vp config"
+    "prepare": "VITE_GIT_HOOKS=0 vp config"
   },
   "overrides": {
     "msw": "2.11.5",

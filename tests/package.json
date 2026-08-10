@@ -4,7 +4,7 @@
   "version": "0.30.0",
   "scripts": {
     "lint": "vp lint src",
-    "test": "vp test -c vite.config.ts --run src/unit/docker",
+    "test": "vp test -c vite.config.ts --run src/unit/config src/unit/docker",
     "test:e2e": "vp test -c vite.config.browser.ts --run",
     "test:e2e:updateSnaps": "vp test -c vite.config.browser.ts --run -u",
     "clean": "rimraf dist"
