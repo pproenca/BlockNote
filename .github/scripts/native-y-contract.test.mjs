@@ -157,3 +157,25 @@ test("runs the Gate 1 collaboration browser contract on Chromium", async () => {
   );
   assert.doesNotMatch(workflow, /SKIP_COLLAB_E2E/);
 });
+
+test("installs Chromium before the production Next.js browser check", async () => {
+  const workflow = await readFile(
+    path.join(root, ".github/workflows/build.yml"),
+    "utf8",
+  );
+  const dependencies = workflow.indexOf("run: vp install");
+  const chromium = workflow.indexOf(
+    "run: pnpm exec playwright install --with-deps chromium",
+    dependencies,
+  );
+  const nextIntegration = workflow.indexOf(
+    "run: NEXTJS_TEST_MODE=build vp test run src/unit/nextjs/serverUtil.test.ts",
+    dependencies,
+  );
+
+  assert.ok(chromium > dependencies, "Chromium must install after dependencies");
+  assert.ok(
+    nextIntegration > chromium,
+    "Chromium must install before the Next.js integration test",
+  );
+});
