@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/pproenca/yjs.git",
+  "branch": "master",
+  "commit": "44480fb5ea7ba4cc838f488fe588c0fd86090626",
+  "packageName": "@pproenca/y",
+  "version": "14.0.0-rc.23-y001.0"
+}

@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { test } from "node:test";
+
+const root = path.resolve(import.meta.dirname, "../..");
+const pinPath = path.join(root, ".github/native-y.json");
+const actionPath = path.join(
+  root,
+  ".github/actions/checkout-native-y/action.yml",
+);
+const installWorkflows = [
+  ".github/workflows/build.yml",
+  ".github/workflows/fresh-install-tests.yml",
+  ".github/workflows/publish.yaml",
+  ".github/workflows/downstream-release.yml",
+];
+
+test("pins the exact native Y mirror artifact", async () => {
+  const pin = JSON.parse(await readFile(pinPath, "utf8"));
+  assert.deepEqual(Object.keys(pin).sort(), [
+    "branch",
+    "commit",
+    "packageName",
+    "repository",
+    "schemaVersion",
+    "version",
+  ]);
+  assert.equal(pin.schemaVersion, 1);
+  assert.equal(pin.repository, "https://github.com/pproenca/yjs.git");
+  assert.equal(pin.branch, "master");
+  assert.match(pin.commit, /^[0-9a-f]{40}$/);
+  assert.equal(pin.packageName, "@pproenca/y");
+  assert.equal(pin.version, "14.0.0-rc.23-y001.0");
+});
+
+test("checks out and validates an empty sibling target", async () => {
+  const action = await readFile(actionPath, "utf8");
+  assert.match(action, /test ! -e "\$target"/);
+  assert.match(action, /git -C "\$target" fetch --depth=1 origin "\$revision"/);
+  assert.match(
+    action,
+    /test "\$\(git -C "\$target" rev-parse HEAD\)" = "\$revision"/,
+  );
+  assert.match(action, /actual_name/);
+  assert.match(action, /actual_version/);
+  assert.match(action, /test "\$actual_name" = "\$expected_name"/);
+  assert.match(action, /test "\$actual_version" = "\$expected_version"/);
+});
+
+test("fetches native Y before every standalone install", async () => {
+  for (const workflow of installWorkflows) {
+    const source = await readFile(path.join(root, workflow), "utf8");
+    const lines = source.split("\n");
+    const installs = lines
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => /^\s*run: vp install(?:\s|$)/.test(line));
+    assert.ok(installs.length > 0, `${workflow} must contain an install`);
+    for (const install of installs) {
+      const checkout = lines.findLastIndex(
+        (line, index) =>
+          index < install.index && /uses: actions\/checkout@/.test(line),
+      );
+      const nativeY = lines.findLastIndex(
+        (line, index) =>
+          index < install.index &&
+          /uses: \.\/\.github\/actions\/checkout-native-y/.test(line),
+      );
+      assert.ok(
+        nativeY > checkout,
+        `${workflow}:${install.index + 1} must fetch native Y after checkout and before install`,
+      );
+    }
+  }
+});

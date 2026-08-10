@@ -1,8 +1,13 @@
 # Downstream extensions
 
-This fork tracks `TypeCellOS/BlockNote`. Its public `main` branch contains the
-downstream changes and is the branch consumers should inspect. The `upstream`
-remote remains the source for BlockNote updates.
+This mirror tracks `TypeCellOS/BlockNote`. Product Factory is its development
+authority. The public `master` branch is the exact outward mirror consumers
+should inspect; the `upstream` remote remains the source for BlockNote updates.
+
+Standalone work requires the native Yjs mirror checked out as the non-empty
+`../yjs` sibling. `.github/native-y.json` pins its exact `master` commit,
+package name, and version. Product Factory updates that pin only from a
+deterministic `platform/yjs` subtree candidate.
 
 ## Design rules
 
@@ -25,9 +30,9 @@ extensions. A consumer can adopt each feature without adopting the others.
 
 ## Releases
 
-Tags named `pf-v<upstream>.<revision>` publish immutable GitHub tarballs and npm
-packages. For example, `pf-v0.52.1.3` publishes npm version
-`0.52.1-pf.3`.
+The `pf-v<upstream>.<revision>` workflow remains release-ready, but publication
+is outside the current Product source-artifact gate. Do not create a tag until
+that separate release is authorized.
 
 The npm distribution will use the public packages
 `@pproenca/blocknote-core`, `@pproenca/blocknote-react`, and
@@ -48,8 +53,8 @@ token is stored in GitHub.
 
 ## Updating upstream
 
-1. Fetch `upstream/main`.
-2. Merge `upstream/main` into this fork's `main` without rewriting published
-   history.
+1. Update Product Factory's embedded BlockNote source from upstream.
+2. Preserve Product Factory history and generate the `master` mirror with a
+   deterministic subtree split.
 3. Run BlockNote's build, lint, unit, and relevant browser tests.
-4. Tag a new `pf-v*` release and update consumers to its immutable artifacts.
+4. Refresh the pinned Yjs split when its embedded tree changes.

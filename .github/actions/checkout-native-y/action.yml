@@ -1,0 +1,25 @@
+name: Checkout native Y
+description: Materialize the exact pinned native Y mirror as the BlockNote sibling workspace
+runs:
+  using: composite
+  steps:
+    - name: Checkout and validate native Y
+      shell: bash
+      run: |
+        set -euo pipefail
+        pin_file="$GITHUB_WORKSPACE/.github/native-y.json"
+        repository=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).repository" "$pin_file")
+        revision=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).commit" "$pin_file")
+        expected_name=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).packageName" "$pin_file")
+        expected_version=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).version" "$pin_file")
+        target="$GITHUB_WORKSPACE/../yjs"
+        test ! -e "$target"
+        git init "$target"
+        git -C "$target" remote add origin "$repository"
+        git -C "$target" fetch --depth=1 origin "$revision"
+        git -C "$target" checkout --detach FETCH_HEAD
+        test "$(git -C "$target" rev-parse HEAD)" = "$revision"
+        actual_name=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).name" "$target/package.json")
+        actual_version=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).version" "$target/package.json")
+        test "$actual_name" = "$expected_name"
+        test "$actual_version" = "$expected_version"

@@ -23,6 +23,8 @@ jobs:
           fetch-depth: 100
           persist-credentials: false
 
+      - uses: ./.github/actions/checkout-native-y
+
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: ".node-version"
@@ -78,6 +80,8 @@ jobs:
           fetch-depth: 100
           persist-credentials: false
 
+      - uses: ./.github/actions/checkout-native-y
+
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: ".node-version"
@@ -131,6 +135,8 @@ jobs:
         with:
           fetch-depth: 100
           persist-credentials: false
+
+      - uses: ./.github/actions/checkout-native-y
 
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:

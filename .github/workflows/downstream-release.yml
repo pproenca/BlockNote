@@ -28,6 +28,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: ./.github/actions/checkout-native-y
+
       - id: release
         name: Require tagged commit on master
         run: |
