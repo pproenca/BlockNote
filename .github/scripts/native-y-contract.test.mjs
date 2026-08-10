@@ -83,7 +83,10 @@ test("uses the workspace pnpm version in release and browser environments", asyn
     path.join(root, ".github/workflows/downstream-release.yml"),
     "utf8",
   );
-  const dockerfile = await readFile(path.join(root, "tests/Dockerfile"), "utf8");
+  const dockerfile = await readFile(
+    path.join(root, "tests/Dockerfile"),
+    "utf8",
+  );
 
   for (const match of workflow.matchAll(/^\s*version: (\d+\.\d+\.\d+)$/gm)) {
     assert.equal(match[1], version);
@@ -123,7 +126,10 @@ test("builds native Y before standalone package builds and typechecks", async ()
   }
 
   const downstreamWorkflow = ".github/workflows/downstream-release.yml";
-  const downstream = await readFile(path.join(root, downstreamWorkflow), "utf8");
+  const downstream = await readFile(
+    path.join(root, downstreamWorkflow),
+    "utf8",
+  );
   const install = downstream.indexOf("vp install");
   const nativeBuild = downstream.indexOf(
     "run: pnpm run build:native-y\n",
@@ -135,4 +141,19 @@ test("builds native Y before standalone package builds and typechecks", async ()
     typecheck > nativeBuild,
     `${downstreamWorkflow} must build native Y before typecheck`,
   );
+});
+
+test("runs the Gate 1 collaboration browser contract on Chromium", async () => {
+  const workflow = await readFile(
+    path.join(root, ".github/workflows/build.yml"),
+    "utf8",
+  );
+  assert.match(workflow, /browser: \[chromium\]/);
+  assert.match(workflow, /shardIndex: \[1\]/);
+  assert.match(workflow, /shardTotal: \[1\]/);
+  assert.match(
+    workflow,
+    /--run src\/end-to-end\/comments src\/end-to-end\/y-prosemirror src\/end-to-end\/collaboration/,
+  );
+  assert.doesNotMatch(workflow, /SKIP_COLLAB_E2E/);
 });

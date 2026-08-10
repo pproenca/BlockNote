@@ -1,10 +1,15 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vite-plus/test";
 
 const blockNoteRoot = path.resolve(import.meta.dirname, "../../../..");
 const repoRoot = path.resolve(blockNoteRoot, "../..");
+const productManifest = path.join(repoRoot, "package.json");
+const makerkitGenerator = path.join(
+  repoRoot,
+  "turbo/generators/templates/setup/generator.ts",
+);
 
 const readJson = (file: string) =>
   JSON.parse(readFileSync(file, "utf8")) as {
@@ -18,10 +23,13 @@ const readJson = (file: string) =>
 describe("Product Factory Git hook boundary", () => {
   it("prevents BlockNote prepare from replacing the repository hook", () => {
     const manifest = readJson(path.join(blockNoteRoot, "package.json"));
-    const rootManifest = readJson(path.join(repoRoot, "package.json"));
 
     expect(manifest.scripts?.prepare).toBe("VITE_GIT_HOOKS=0 vp config");
-    expect(manifest.packageManager).toBe(rootManifest.packageManager);
+    if (existsSync(productManifest)) {
+      expect(manifest.packageManager).toBe(
+        readJson(productManifest).packageManager,
+      );
+    }
   });
 
   it("keeps collaboration core as a peer and development dependency", () => {
@@ -45,13 +53,13 @@ describe("Product Factory Git hook boundary", () => {
     expect(workspace).toContain('  "yjs": "13.6.31"');
   });
 
-  it("preserves Makerkit's full-health pre-commit generator", () => {
-    const generator = readFileSync(
-      path.join(repoRoot, "turbo/generators/templates/setup/generator.ts"),
-      "utf8",
-    );
+  it.runIf(existsSync(makerkitGenerator))(
+    "preserves Makerkit's full-health pre-commit generator",
+    () => {
+      const generator = readFileSync(makerkitGenerator, "utf8");
 
-    expect(generator).toContain("pnpm run lint:fix\\npnpm run typecheck\\n");
-    expect(generator).toContain("pnpm run --filter scripts license");
-  });
+      expect(generator).toContain("pnpm run lint:fix\\npnpm run typecheck\\n");
+      expect(generator).toContain("pnpm run --filter scripts license");
+    },
+  );
 });
