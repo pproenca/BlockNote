@@ -27,6 +27,7 @@ import {
   defineBlockNoteAuthorizationContract,
   defineBlockNoteDocumentStoreContract,
 } from "@blocknote/test-utils";
+import type { Doc as NativeYDoc } from "@y/y";
 
 const Collaboration = createExtension(
   ({
@@ -74,11 +75,13 @@ declare const context: Context;
 declare const editor: Editor;
 declare const session: BlockNoteSession<typeof document>;
 declare const Provider: typeof BlockNoteSessionProvider;
+declare const nativeDoc: NativeYDoc;
 void context.endpoint;
 void context.accountId;
 void context.actorId;
 void editor.documentDefinition;
 void Provider;
+void nativeDoc;
 
 function selectorInference() {
   return useBlockNoteSessionState({

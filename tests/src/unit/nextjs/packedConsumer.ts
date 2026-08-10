@@ -35,7 +35,7 @@ export const packedPackageCases = [
     consumerDependencies: {
       "@y/prosemirror": "2.0.0-6",
       "@y/protocols": "1.0.6-rc.1",
-      "@y/y": "14.0.0-rc.23",
+      "@y/websocket": "4.0.0-rc.2",
       "y-prosemirror": "1.3.7",
       "y-protocols": "1.0.6",
       yjs: "13.6.27",
@@ -175,15 +175,24 @@ export const packedPackageCases = [
 ] as const satisfies readonly PackedPackageCase[];
 
 export type PackedArtifact = {
-  packageCase: PackedPackageCase;
-  tarballPath: string;
-  tarballName: string;
-  version: string;
+  readonly packageCase: PackedPackageCase;
+  readonly tarballPath: string;
+  readonly tarballName: string;
+  readonly version: string;
+};
+
+export type PackedEngineArtifact = {
+  readonly alias: "@y/y";
+  readonly packageName: "@pproenca/y";
+  readonly tarballName: string;
+  readonly tarballPath: string;
+  readonly version: string;
 };
 
 export type PackedArtifactSet = {
-  directory: string;
-  artifacts: readonly PackedArtifact[];
+  readonly directory: string;
+  readonly artifacts: readonly PackedArtifact[];
+  readonly engine: PackedEngineArtifact;
 };
 
 export type PublicImportProof = {
@@ -193,8 +202,23 @@ export type PublicImportProof = {
   resolvedPath: string;
 };
 
+export type PackedEngineProof = {
+  readonly alias: "@y/y";
+  readonly manifestName: "@pproenca/y";
+  readonly version: string;
+  readonly resolvedRealPaths: readonly string[];
+  readonly runtimeIdentity: Readonly<
+    Record<
+      "ContentDeleted" | "Doc" | "Item" | "createContentIdsFromUpdate",
+      boolean
+    >
+  >;
+  readonly upstreamCopies: readonly string[];
+};
+
 const repoRoot = path.resolve(__dirname, "../../../..");
 const packageRoot = path.join(repoRoot, "packages");
+const nativeYRoot = path.resolve(repoRoot, "../yjs");
 const vpBinary = path.join(repoRoot, "node_modules", ".bin", "vp");
 const tscBinary = path.join(repoRoot, "node_modules", ".bin", "tsc");
 const tsgoBinary = path.join(repoRoot, "node_modules", ".bin", "tsgo");
@@ -252,6 +276,25 @@ const readPackageVersion = (packageCase: PackedPackageCase) => {
   }
 
   return manifest.version;
+};
+
+const readNativeYManifest = () => {
+  const manifest = JSON.parse(
+    readFileSync(path.join(nativeYRoot, "package.json"), "utf8"),
+  ) as { name?: unknown; version?: unknown };
+
+  if (manifest.name !== "@pproenca/y") {
+    throw new Error(
+      `Native Y package must be named @pproenca/y, received ${String(manifest.name)}`,
+    );
+  }
+  if (manifest.version !== "14.0.0-rc.23-y001.0") {
+    throw new Error(
+      `Native Y package must be version 14.0.0-rc.23-y001.0, received ${String(manifest.version)}`,
+    );
+  }
+
+  return { packageName: manifest.name, version: manifest.version } as const;
 };
 
 const findOnlyTarball = (directory: string, packageName: string) => {
@@ -320,7 +363,22 @@ export const buildAndPackPackages = (): PackedArtifactSet => {
       };
     });
 
-    return { directory, artifacts };
+    runPnpm(["run", "dist"], nativeYRoot);
+    runPnpm(["run", "verify:pack"], nativeYRoot);
+    const engineDirectory = path.join(directory, "native-y");
+    mkdirSync(engineDirectory, { recursive: true });
+    runPnpm(["pack", "--pack-destination", engineDirectory], nativeYRoot);
+    const nativeYManifest = readNativeYManifest();
+    const engineTarballName = findOnlyTarball(engineDirectory, "@pproenca/y");
+    const engine: PackedEngineArtifact = {
+      alias: "@y/y",
+      packageName: nativeYManifest.packageName,
+      tarballName: engineTarballName,
+      tarballPath: path.join(engineDirectory, engineTarballName),
+      version: nativeYManifest.version,
+    };
+
+    return { directory, artifacts, engine };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
     throw error;
@@ -345,7 +403,11 @@ const artifactFor = (artifacts: PackedArtifactSet, packageName: string) => {
   return artifact;
 };
 
-export const assertExactPackedArtifactSet = (artifacts: PackedArtifactSet) => {
+export const assertExactPackedArtifactSet = (artifacts: {
+  readonly directory: string;
+  readonly artifacts: readonly PackedArtifact[];
+  readonly engine?: PackedEngineArtifact;
+}) => {
   const expected = new Set<string>(
     packedPackageCases.map(({ packageName }) => packageName),
   );
@@ -375,13 +437,20 @@ export const assertExactPackedArtifactSet = (artifacts: PackedArtifactSet) => {
       `Packed BlockNote versions must match: ${[...versions].join(", ")}`,
     );
   }
+  if (
+    artifacts.engine?.alias !== "@y/y" ||
+    artifacts.engine.packageName !== "@pproenca/y" ||
+    artifacts.engine.version !== "14.0.0-rc.23-y001.0"
+  ) {
+    throw new Error(
+      "Packed set must contain one exact native Y artifact for @pproenca/y@14.0.0-rc.23-y001.0.",
+    );
+  }
 };
 
-const createConsumerManifest = (artifacts: PackedArtifactSet) => ({
-  name: "blocknote-packed-consumer",
-  private: true,
-  type: "module",
-  dependencies: Object.assign(
+const createConsumerManifest = (artifacts: PackedArtifactSet) => {
+  const engineSpecifier = `file:.tarballs/${artifacts.engine.tarballName}`;
+  const dependencies = Object.assign(
     {},
     ...packedPackageCases.map((packageCase) =>
       "consumerDependencies" in packageCase
@@ -394,8 +463,17 @@ const createConsumerManifest = (artifacts: PackedArtifactSet) => ({
         `file:.tarballs/${artifactFor(artifacts, packageName).tarballName}`,
       ]),
     ),
-  ),
-});
+  );
+  dependencies[artifacts.engine.alias] = engineSpecifier;
+
+  return {
+    name: "blocknote-packed-consumer",
+    private: true,
+    type: "module",
+    dependencies,
+    pnpm: { overrides: { [artifacts.engine.alias]: engineSpecifier } },
+  };
+};
 
 const stagePackedArtifacts = (
   consumerDirectory: string,
@@ -406,6 +484,10 @@ const stagePackedArtifacts = (
   for (const artifact of artifacts.artifacts) {
     cpSync(artifact.tarballPath, path.join(directory, artifact.tarballName));
   }
+  cpSync(
+    artifacts.engine.tarballPath,
+    path.join(directory, artifacts.engine.tarballName),
+  );
 };
 
 const installConsumer = (consumerDirectory: string) => {
@@ -468,6 +550,7 @@ const readLocalPackageSources = (
 const writeHermeticWorkspace = (
   consumerDirectory: string,
   packageCases: readonly PackedPackageCase[],
+  engine?: PackedEngineArtifact,
 ) => {
   const sources = readLocalPackageSources(consumerDirectory, packageCases);
   for (const [packageName, source] of sources) {
@@ -478,6 +561,28 @@ const writeHermeticWorkspace = (
     }
   }
 
+  const engineSpecifier = engine
+    ? `file:.tarballs/${engine.tarballName}`
+    : undefined;
+  if (
+    engineSpecifier &&
+    !isInsideDirectory(
+      consumerDirectory,
+      path.resolve(consumerDirectory, engineSpecifier.slice("file:".length)),
+    )
+  ) {
+    throw new Error(`Native Y tarball is outside the fresh consumer.`);
+  }
+  const overrides = Object.fromEntries(
+    [...sources].map(([packageName, { specifier }]) => [
+      packageName,
+      specifier,
+    ]),
+  );
+  if (engineSpecifier) {
+    overrides["@y/y"] = engineSpecifier;
+  }
+
   writeFileSync(
     path.join(consumerDirectory, "pnpm-workspace.yaml"),
     `${JSON.stringify(
@@ -485,12 +590,7 @@ const writeHermeticWorkspace = (
         packages: ["."],
         linkWorkspacePackages: false,
         preferWorkspacePackages: false,
-        overrides: Object.fromEntries(
-          [...sources].map(([packageName, { specifier }]) => [
-            packageName,
-            specifier,
-          ]),
-        ),
+        overrides,
       },
       null,
       2,
@@ -501,6 +601,7 @@ const writeHermeticWorkspace = (
 };
 
 const assertStagedTarballs = (
+  consumerDirectory: string,
   sources: ReadonlyMap<string, LocalPackageSource>,
   artifacts: PackedArtifactSet,
 ) => {
@@ -519,6 +620,21 @@ const assertStagedTarballs = (
         `${packageName} staged tarball does not match ${suppliedTarball}`,
       );
     }
+  }
+  const stagedEngine = path.join(
+    consumerDirectory,
+    ".tarballs",
+    artifacts.engine.tarballName,
+  );
+  if (
+    !existsSync(stagedEngine) ||
+    !readFileSync(stagedEngine).equals(
+      readFileSync(artifacts.engine.tarballPath),
+    )
+  ) {
+    throw new Error(
+      `Native Y staged tarball does not match ${artifacts.engine.tarballPath}`,
+    );
   }
 };
 
@@ -665,7 +781,8 @@ const createRuntimeProbe = () => {
 
   return `
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 if ("window" in globalThis || "document" in globalThis) {
@@ -675,8 +792,9 @@ if ("window" in globalThis || "document" in globalThis) {
 const entries = ${JSON.stringify(entries)};
 const proof = [];
 const require = createRequire(import.meta.url);
+const engineOnly = process.env.BLOCKNOTE_ENGINE_PROBE === "1";
 
-for (const entry of entries) {
+for (const entry of engineOnly ? [] : entries) {
   const cacheBefore = new Set(Object.keys(require.cache));
   const resolvedUrl = import.meta.resolve(entry.specifier);
   const resolvedPath = fileURLToPath(resolvedUrl);
@@ -713,8 +831,109 @@ for (const entry of entries) {
   proof.push({ ...entry, resolvedPath });
 }
 
-process.stdout.write(JSON.stringify(proof));
+if (!engineOnly) {
+  process.stdout.write(JSON.stringify(proof));
+} else {
+const engineAnchors = [
+  ["@blocknote/core", "@blocknote/core"],
+  ["@blocknote/collaboration", "@blocknote/collaboration"],
+  ["@blocknote/collaboration-server", "@blocknote/collaboration-server"],
+  ["@blocknote/server-util", "@blocknote/server-util"],
+  ["@y/prosemirror", "@y/prosemirror"],
+  ["@y/protocols", "@y/protocols/sync"],
+  ["@y/websocket", "@y/websocket"],
+];
+const engineExports = [
+  "ContentDeleted",
+  "Doc",
+  "Item",
+  "createContentIdsFromUpdate",
+];
+const engineResolutions = [];
+
+for (const [anchor, entrySpecifier] of engineAnchors) {
+  const anchorRequire = createRequire(require.resolve(entrySpecifier));
+  const manifestPath = anchorRequire.resolve("@y/y/package.json");
+  const resolvedRealPath = realpathSync(path.dirname(manifestPath));
+  const entryPath = realpathSync(anchorRequire.resolve("@y/y"));
+  const runtime = await import(pathToFileURL(entryPath).href);
+  engineResolutions.push({ anchor, manifestPath, resolvedRealPath, runtime });
+}
+
+const canonicalRuntime = engineResolutions[0].runtime;
+const runtimeIdentity = Object.fromEntries(
+  engineExports.map((exportName) => [
+    exportName,
+    canonicalRuntime[exportName] !== undefined &&
+      engineResolutions.every(
+        ({ runtime }) => runtime[exportName] === canonicalRuntime[exportName],
+      ),
+  ]),
+);
+const manifest = JSON.parse(
+  readFileSync(engineResolutions[0].manifestPath, "utf8"),
+);
+const nodeModules = path.join(process.cwd(), "node_modules");
+const possibleEngineManifests = [path.join(nodeModules, "@y/y/package.json")];
+const virtualStore = path.join(nodeModules, ".pnpm");
+if (existsSync(virtualStore)) {
+  for (const entry of readdirSync(virtualStore, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      possibleEngineManifests.push(
+        path.join(virtualStore, entry.name, "node_modules/@y/y/package.json"),
+      );
+    }
+  }
+}
+const upstreamCopies = possibleEngineManifests.filter((manifestPath) => {
+  if (!existsSync(manifestPath)) return false;
+  return JSON.parse(readFileSync(manifestPath, "utf8")).name === "@y/y";
+});
+
+process.stdout.write(JSON.stringify({
+  alias: "@y/y",
+  manifestName: manifest.name,
+  version: manifest.version,
+  resolvedRealPaths: engineResolutions.map(({ resolvedRealPath }) => resolvedRealPath),
+  runtimeIdentity,
+  upstreamCopies,
+}));
+}
 `;
+};
+
+export const assertEngineInstallation = (proof: PackedEngineProof) => {
+  if (proof.alias !== "@y/y") {
+    throw new Error(
+      `Native Y must use the @y/y alias, received ${proof.alias}`,
+    );
+  }
+  if (proof.manifestName !== "@pproenca/y") {
+    throw new Error(
+      `Native Y alias must install @pproenca/y, received ${proof.manifestName}`,
+    );
+  }
+  if (proof.version !== "14.0.0-rc.23-y001.0") {
+    throw new Error(
+      `Native Y must install version 14.0.0-rc.23-y001.0, received ${proof.version}`,
+    );
+  }
+  if (new Set(proof.resolvedRealPaths).size !== 1) {
+    throw new Error("Native Y anchors must resolve one physical runtime.");
+  }
+  const missingRuntimeExports = Object.entries(proof.runtimeIdentity)
+    .filter(([, matches]) => !matches)
+    .map(([exportName]) => exportName);
+  if (missingRuntimeExports.length > 0) {
+    throw new Error(
+      `Native Y runtime identity failed for: ${missingRuntimeExports.join(", ")}`,
+    );
+  }
+  if (proof.upstreamCopies.length > 0) {
+    throw new Error(
+      `Fresh consumer installed upstream @y/y copies:\n${proof.upstreamCopies.join("\n")}`,
+    );
+  }
 };
 
 const createTypeProbe = () => {
@@ -746,8 +965,9 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
     const sources = writeHermeticWorkspace(
       consumerDirectory,
       packedPackageCases,
+      artifacts.engine,
     );
-    assertStagedTarballs(sources, artifacts);
+    assertStagedTarballs(consumerDirectory, sources, artifacts);
     installConsumer(consumerDirectory);
     const installedPackages = inspectInstalledPackages(
       consumerDirectory,
@@ -763,6 +983,13 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
         NODE_ENV: "production",
       }),
     ) as PublicImportProof[];
+    const engine = JSON.parse(
+      run(process.execPath, [runtimeProbePath], consumerDirectory, {
+        BLOCKNOTE_ENGINE_PROBE: "1",
+        NODE_ENV: "production",
+      }),
+    ) as PackedEngineProof;
+    assertEngineInstallation(engine);
 
     if (!existsSync(tscBinary)) {
       throw new Error(`Missing TypeScript binary at ${tscBinary}`);
@@ -793,7 +1020,7 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
     );
     run(tscBinary, ["--project", "tsconfig.json"], consumerDirectory);
 
-    return { installedPackages, publicImports };
+    return { installedPackages, publicImports, engine };
   } finally {
     rmSync(consumerDirectory, { recursive: true, force: true });
   }
@@ -825,30 +1052,28 @@ export const prepareNextConsumer = (artifacts: PackedArtifactSet) => {
       },
     });
 
-    const environment = Object.fromEntries(
-      [
-        ["BLOCKNOTE_CORE_TARBALL", "@blocknote/core"],
-        ["BLOCKNOTE_REACT_TARBALL", "@blocknote/react"],
-        ["BLOCKNOTE_SERVER_UTIL_TARBALL", "@blocknote/server-util"],
-        ["BLOCKNOTE_COLLABORATION_TARBALL", "@blocknote/collaboration"],
-        [
-          "BLOCKNOTE_COLLABORATION_SERVER_TARBALL",
-          "@blocknote/collaboration-server",
-        ],
-        ["BLOCKNOTE_TEST_UTILS_TARBALL", "@blocknote/test-utils"],
-      ].map(([variable, packageName]) => [
-        variable,
-        artifactFor(artifacts, packageName).tarballPath,
-      ]),
-    );
-    if (pnpmCli) {
-      environment.BLOCKNOTE_PNPM_CLI = pnpmCli;
-    }
-
     const packageCases = packedPackageCases;
-    const sources = writeHermeticWorkspace(consumerDirectory, packageCases);
-    run("bash", ["setup.sh"], consumerDirectory, environment);
-    assertStagedTarballs(sources, artifacts);
+    const manifestPath = path.join(consumerDirectory, "package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    manifest.dependencies ??= {};
+    for (const { packageName } of packageCases) {
+      manifest.dependencies[packageName] =
+        `file:.tarballs/${artifactFor(artifacts, packageName).tarballName}`;
+    }
+    manifest.dependencies[artifacts.engine.alias] =
+      `file:.tarballs/${artifacts.engine.tarballName}`;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    stagePackedArtifacts(consumerDirectory, artifacts);
+    const sources = writeHermeticWorkspace(
+      consumerDirectory,
+      packageCases,
+      artifacts.engine,
+    );
+    assertStagedTarballs(consumerDirectory, sources, artifacts);
+    installConsumer(consumerDirectory);
     inspectInstalledPackages(
       consumerDirectory,
       artifacts,

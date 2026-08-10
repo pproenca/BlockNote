@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
   buildAndPackPackages,
+  assertEngineInstallation,
   assertExactPackedArtifactSet,
   packedPackageCases,
   prepareNextConsumer,
@@ -14,6 +15,7 @@ import {
   removePackedArtifacts,
   runPublicConsumerProbe,
   type PackedArtifactSet,
+  type PackedEngineProof,
 } from "./packedConsumer.js";
 
 const requestedMode = process.env.NEXTJS_TEST_MODE || "dev";
@@ -76,10 +78,46 @@ describe("built BlockNote package contracts", () => {
     ).toEqual(
       expectedImports.map((entry) => ({ ...entry, isBuiltOutput: true })),
     );
+    expect(proof.engine).toMatchObject({
+      alias: "@y/y",
+      manifestName: "@pproenca/y",
+      version: "14.0.0-rc.23-y001.0",
+    });
+    expect(new Set(proof.engine.resolvedRealPaths).size).toBe(1);
+    expect(proof.engine.runtimeIdentity).toEqual({
+      ContentDeleted: true,
+      Doc: true,
+      Item: true,
+      createContentIdsFromUpdate: true,
+    });
+    expect(proof.engine.upstreamCopies).toEqual([]);
   }, 180_000);
 
   it("rejects missing and mixed artifact sets before installation", () => {
     const artifacts = getPackedArtifacts();
+    const validEngineProof = (): PackedEngineProof => ({
+      alias: "@y/y",
+      manifestName: "@pproenca/y",
+      version: "14.0.0-rc.23-y001.0",
+      resolvedRealPaths: ["/consumer/node_modules/@y/y"],
+      runtimeIdentity: {
+        ContentDeleted: true,
+        Doc: true,
+        Item: true,
+        createContentIdsFromUpdate: true,
+      },
+      upstreamCopies: [],
+    });
+
+    expect(() =>
+      assertExactPackedArtifactSet({ ...artifacts, engine: undefined }),
+    ).toThrow("exact native Y artifact");
+    expect(() =>
+      assertEngineInstallation({
+        ...validEngineProof(),
+        manifestName: "@y/y",
+      } as unknown as PackedEngineProof),
+    ).toThrow("must install @pproenca/y");
     expect(() =>
       assertExactPackedArtifactSet({
         ...artifacts,
