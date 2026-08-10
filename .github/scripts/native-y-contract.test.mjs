@@ -104,7 +104,7 @@ test("builds native Y before standalone package builds and typechecks", async ()
   );
   assert.equal(
     manifest.scripts.build,
-    "pnpm run build:native-y && vp run --filter './packages/*' build",
+    "pnpm run build:native-y && vp run --filter './packages/core' build && vp run --filter './shared' build && vp run --filter './packages/*' --filter '!@blocknote/core' build",
   );
 
   const orchestratedBuilds = [
