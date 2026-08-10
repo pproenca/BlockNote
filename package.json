@@ -19,7 +19,7 @@
   "scripts": {
     "dev": "vp run --filter @blocknote/example-editor dev",
     "dev:docs": "vp run --filter docs dev",
-    "build": "pnpm run build:native-y && pnpm --pm-on-fail=ignore -r --filter !@pproenca/y --if-present run build",
+    "build": "pnpm run build:native-y && vp run --filter './packages/*' build",
     "build:native-y": "pnpm --filter @pproenca/y run build",
     "build:clean": "vp run clean && vp run gen && vp run clean && vp run build",
     "build:site": "vp run -r build:site",

@@ -102,7 +102,10 @@ test("builds native Y before standalone package builds and typechecks", async ()
     manifest.scripts["build:native-y"],
     "pnpm --filter @pproenca/y run build",
   );
-  assert.match(manifest.scripts.build, /^pnpm run build:native-y && /);
+  assert.equal(
+    manifest.scripts.build,
+    "pnpm run build:native-y && vp run --filter './packages/*' build",
+  );
 
   const orchestratedBuilds = [
     ".github/workflows/build.yml",
