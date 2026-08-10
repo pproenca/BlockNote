@@ -11,14 +11,17 @@ const readJson = (file: string) =>
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
+    packageManager?: string;
     scripts?: Record<string, string>;
   };
 
 describe("Product Factory Git hook boundary", () => {
   it("prevents BlockNote prepare from replacing the repository hook", () => {
     const manifest = readJson(path.join(blockNoteRoot, "package.json"));
+    const rootManifest = readJson(path.join(repoRoot, "package.json"));
 
     expect(manifest.scripts?.prepare).toBe("VITE_GIT_HOOKS=0 vp config");
+    expect(manifest.packageManager).toBe(rootManifest.packageManager);
   });
 
   it("keeps collaboration core as a peer and development dependency", () => {
@@ -29,6 +32,17 @@ describe("Product Factory Git hook boundary", () => {
     expect(manifest.dependencies?.["@blocknote/core"]).toBeUndefined();
     expect(manifest.devDependencies?.["@blocknote/core"]).toBe("workspace:^");
     expect(manifest.peerDependencies?.["@blocknote/core"]).toBe("^0.52.1");
+  });
+
+  it("keeps nested ProseMirror resolution compatible with Makerkit", () => {
+    const workspace = readFileSync(
+      path.join(blockNoteRoot, "pnpm-workspace.yaml"),
+      "utf8",
+    );
+
+    expect(workspace).toContain('  "prosemirror-model": "1.25.9"');
+    expect(workspace).toContain('  "prosemirror-view": "1.41.9"');
+    expect(workspace).toContain('  "yjs": "13.6.31"');
   });
 
   it("preserves Makerkit's full-health pre-commit generator", () => {
