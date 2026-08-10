@@ -18,6 +18,7 @@ import { useBlockNoteEditor } from "../hooks/useBlockNoteEditor.js";
 import { useEditorChange } from "../hooks/useEditorChange.js";
 import { useEditorSelectionChange } from "../hooks/useEditorSelectionChange.js";
 import { usePrefersColorScheme } from "../hooks/usePrefersColorScheme.js";
+import { useOptionalBlockNoteSession } from "../session/BlockNoteSessionContext.js";
 import {
   BlockNoteContext,
   BlockNoteContextValue,
@@ -301,6 +302,7 @@ export const BlockNoteViewRaw = React.forwardRef(BlockNoteViewComponent) as <
 export const BlockNoteViewEditor = (props: { children?: ReactNode }) => {
   const ctx = useBlockNoteViewContext()!;
   const editor = useBlockNoteEditor();
+  const session = useOptionalBlockNoteSession();
 
   const portalManager = useMemo(() => {
     return getContentComponent();
@@ -315,9 +317,9 @@ export const BlockNoteViewEditor = (props: { children?: ReactNode }) => {
       // removes the `tabIndex="0"` attribute we set (see
       // `BlockNoteEditor.ts`). Ideally though, this logic would exist in a
       // separate hook.
-      if (ctx.editorProps.editable !== undefined) {
-        editor.isEditable = ctx.editorProps.editable;
-      }
+      editor.isEditable =
+        ctx.editorProps.editable ??
+        (Object.is(session?.editor, editor) ? editor.isEditable : true);
       // Since we are not using TipTap's React Components, we need to set up the contentComponent it expects
       // This is a simple replacement for the state management that Tiptap does internally
       editor._tiptapEditor.contentComponent = portalManager;
@@ -346,7 +348,7 @@ export const BlockNoteViewEditor = (props: { children?: ReactNode }) => {
         });
       }
     },
-    [ctx.editorProps.editable, editor, portalManager, portalTarget],
+    [ctx.editorProps.editable, editor, portalManager, portalTarget, session],
   );
 
   return (

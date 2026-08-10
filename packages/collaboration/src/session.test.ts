@@ -180,6 +180,37 @@ describe("createBlockNoteSession", () => {
     expect(session.editor.isEditable).toBe(false);
   });
 
+  it("observes access changes during asynchronous recovery startup", async () => {
+    const fixture = harness();
+    let releaseRecovery!: () => void;
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>((resolve) => {
+      markRecoveryStarted = resolve;
+    });
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const sessionPromise = createBlockNoteSessionWithDependencies(
+      fixture.options,
+      {
+        ...fixture.dependencies,
+        async createRecoveryStore() {
+          markRecoveryStarted();
+          await recoveryGate;
+          return null;
+        },
+      },
+    );
+
+    await recoveryStarted;
+    fixture.access.set(viewing);
+    releaseRecovery();
+    const session = await sessionPromise;
+
+    expect(session.getState().access).toStrictEqual(viewing);
+    expect(session.editor.isEditable).toBe(false);
+  });
+
   it("destroys every resource exactly once across 100 calls", async () => {
     const fixture = harness();
     const session = await createBlockNoteSessionWithDependencies(

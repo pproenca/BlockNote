@@ -355,6 +355,11 @@ export async function createBlockNoteSessionWithDependencies<
           : {}),
       },
     } as unknown as BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>;
+    stopAccess = options.access.subscribe((access) => {
+      if (editor) editor.isEditable = canMutate(access);
+      publish({ access });
+    });
+    publish({ access: options.access.get() });
     editor = dependencies.createEditor(
       runtimeOptions,
       doc,
@@ -372,10 +377,6 @@ export async function createBlockNoteSessionWithDependencies<
       if (canMutate(access)) return true;
       events.emit("accessRejected", { action: "edit", access });
       return false;
-    });
-    stopAccess = options.access.subscribe((access) => {
-      if (editor) editor.isEditable = canMutate(access);
-      publish({ access });
     });
     const signals = {
       status(connection: "connecting" | "online" | "offline" | "degraded") {
