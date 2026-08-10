@@ -14,17 +14,6 @@ export default defineConfig(
               { pattern: "!**/*.tsbuildinfo", base: "workspace" },
             ],
           },
-          test: {
-            command: "vp test --run",
-            input: [
-              { auto: true },
-              { pattern: "!**/.next/**", base: "workspace" },
-              {
-                pattern: "!tests/nextjs-test-app/node_modules/**",
-                base: "workspace",
-              },
-            ],
-          },
         },
       },
       test: {

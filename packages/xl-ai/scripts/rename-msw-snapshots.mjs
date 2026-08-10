@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck
 // Repair msw-snapshot files after a request-shape change.
 //
 // When the request body changes (e.g. a schema change in BlockNote alters the

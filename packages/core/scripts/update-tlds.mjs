@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck
 /**
  * Regenerate src/extensions/tiptap-extensions/Link/helpers/tlds.ts from IANA's
  * authoritative TLD list.

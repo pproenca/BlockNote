@@ -8,18 +8,6 @@ import pkg from "./package.json";
 export default defineConfig(
   (conf) =>
     ({
-      run: {
-        tasks: {
-          build: {
-            command: "tsgo && vp build",
-            input: [
-              { auto: true },
-              { pattern: "!**/*.tsbuildinfo", base: "workspace" },
-            ],
-            output: ["dist/**", "!dist/*.tsbuildinfo"],
-          },
-        },
-      },
       test: {
         setupFiles: ["./vitestSetup.ts"],
       },

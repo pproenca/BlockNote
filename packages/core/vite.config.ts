@@ -6,18 +6,6 @@ import pkg from "./package.json";
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  run: {
-    tasks: {
-      build: {
-        command: "tsgo && vp build",
-        input: [
-          { auto: true },
-          { pattern: "!**/*.tsbuildinfo", base: "workspace" },
-        ],
-        output: ["dist/**", "!dist/*.tsbuildinfo"],
-      },
-    },
-  },
   test: {
     environment: "jsdom",
     setupFiles: ["./vitestSetup.ts"],

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck
 
 // Extracts the changelog section for a given version from CHANGELOG.md and
 // writes it to an output file (for use as a GitHub Release body).

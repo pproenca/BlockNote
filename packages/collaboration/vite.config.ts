@@ -9,18 +9,6 @@ const manifest: {
 } = pkg;
 
 export default defineConfig({
-  run: {
-    tasks: {
-      build: {
-        command: "tsgo && vp build",
-        input: [
-          { auto: true },
-          { pattern: "!**/*.tsbuildinfo", base: "workspace" },
-        ],
-        output: ["dist/**", "!dist/*.tsbuildinfo"],
-      },
-    },
-  },
   build: {
     sourcemap: true,
     lib: {
