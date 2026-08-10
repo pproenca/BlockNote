@@ -165,7 +165,7 @@ test("installs Chromium before the production Next.js browser check", async () =
   );
   const dependencies = workflow.indexOf("run: vp install");
   const chromium = workflow.indexOf(
-    "run: pnpm exec playwright install --with-deps chromium",
+    "run: vp exec playwright install --with-deps chromium\n        working-directory: tests",
     dependencies,
   );
   const nextIntegration = workflow.indexOf(

@@ -43,7 +43,8 @@ jobs:
         run: vp run test
 
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: vp exec playwright install --with-deps chromium
+        working-directory: tests
 
       - name: Run Next.js integration test (production build)
         run: NEXTJS_TEST_MODE=build vp test run src/unit/nextjs/serverUtil.test.ts
