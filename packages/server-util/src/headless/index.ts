@@ -25,4 +25,7 @@ export type {
   BlockNoteCommentAnchorVerificationKey,
 } from "./comment-anchor-authority.js";
 export { bindBlockNoteSuggestionActor } from "./suggestion-validation.js";
-export type { BlockNoteProjection } from "./project.js";
+export {
+  createBlockNoteProjector,
+  type BlockNoteProjection,
+} from "./project.js";

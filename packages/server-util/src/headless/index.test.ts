@@ -3,11 +3,28 @@ import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 import {
   BlockNoteError,
   blockNotePersistence,
+  createBlockNoteProjector,
   isBlockNoteError,
   type BlockNoteCheckpoint,
-} from "./index.js";
+} from "@blocknote/server-util/headless";
+import { BlockNoteSchema, defineBlockNoteDocument } from "@blocknote/core";
 
 describe("headless persistence facade", () => {
+  it("exports the opaque collaboration projector", () => {
+    const project = createBlockNoteProjector(
+      defineBlockNoteDocument({
+        id: "headless-entrypoint",
+        version: "1",
+        schema: BlockNoteSchema.create(),
+      }),
+    );
+
+    expectTypeOf<
+      Parameters<typeof project>[0]["doc"]
+    >().toEqualTypeOf<unknown>();
+    expectTypeOf(project).toBeFunction();
+  });
+
   it("round-trips framed values without exposing mutable bytes", () => {
     const frame = Uint8Array.from([66, 78, 1, 1, 0, 0, 0, 0]);
     const checkpoint = blockNotePersistence.checkpointFromBytes(frame);

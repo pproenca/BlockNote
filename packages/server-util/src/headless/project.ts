@@ -1,5 +1,6 @@
 import type {
   AnyBlockNoteDocumentDefinition,
+  BlockNoteBlockFromSchema,
   BlockNoteRevision,
   BlockNoteSuggestion,
 } from "@blocknote/core";
@@ -19,6 +20,12 @@ export type BlockNoteProjection<
     readonly revision: BlockNoteRevision;
   } & TExtensionProjection
 >;
+
+type ProjectionFor<Document extends AnyBlockNoteDocumentDefinition> =
+  BlockNoteProjection<
+    BlockNoteBlockFromSchema<Document["schema"]>,
+    Document["~types"]["projection"]
+  >;
 
 type DeltaNode = {
   readonly name: string | null;
@@ -461,4 +468,21 @@ export function projectBlockNoteDocument(input: {
     definitionVersion: input.document.version,
     revision: Object.freeze({ ...input.revision }),
   });
+}
+
+export function createBlockNoteProjector<
+  const Document extends AnyBlockNoteDocumentDefinition,
+>(document: Document) {
+  return (input: {
+    readonly doc: unknown;
+    readonly revision: BlockNoteRevision;
+  }): ProjectionFor<Document> => {
+    const doc = input.doc as Y.Doc;
+    return projectBlockNoteDocument({
+      document,
+      doc,
+      content: doc.get("prosemirror"),
+      revision: input.revision,
+    }) as ProjectionFor<Document>;
+  };
 }

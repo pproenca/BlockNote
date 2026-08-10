@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import * as Y from "@y/y";
 
 import { createBlockNoteDocumentService } from "./document-service.js";
+import { createBlockNoteProjector } from "./project.js";
 import { encodeHeadlessFrame } from "./reconstruct.js";
 
 function createMemoryStore() {
@@ -187,11 +188,23 @@ describe("createBlockNoteDocumentService", () => {
       ),
     });
 
-    await expect(service.project("doc")).resolves.toMatchObject({
-      blocks: [{ id: "root", type: "paragraph" }],
-      markdown: "hello",
-      revision,
-    });
+    const native = new Y.Doc({ gc: false });
+    try {
+      paragraph(native, "hello");
+      const direct = createBlockNoteProjector(document)({
+        doc: native,
+        revision,
+      });
+
+      await expect(service.project("doc")).resolves.toEqual(direct);
+      expect(direct).toMatchObject({
+        blocks: [{ id: "root", type: "paragraph" }],
+        markdown: "hello",
+        revision,
+      });
+    } finally {
+      native.destroy();
+    }
   });
 
   it("rejects malformed frames, revision mismatch, and discontinuous changes", async () => {
