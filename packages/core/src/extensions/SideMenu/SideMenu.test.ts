@@ -65,6 +65,17 @@ describe("SideMenuExtension.showAtBlock", () => {
     expect(sideMenu.store.state?.block.id).toBe("second");
   });
 
+  it("keeps command-opened menus visible during keyboard interaction", () => {
+    const editor = createEditor();
+    const sideMenu = editor.getExtension(SideMenuExtension)!;
+
+    editor.focus();
+    expect(sideMenu.showAtBlock("first")).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+
+    expect(sideMenu.store.state?.show).toBe(true);
+  });
+
   it("rejects missing, non-editable, and destroyed targets", () => {
     const editor = createEditor();
     const sideMenu = editor.getExtension(SideMenuExtension)!;

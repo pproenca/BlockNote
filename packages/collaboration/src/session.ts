@@ -2,6 +2,7 @@ import {
   BlockNoteEditor,
   BlockNoteError,
   blockNoteDocumentBinding,
+  type BlockNoteAccess,
   type BlockNoteCommentAnchor,
   type BlockNoteCommentAnchorMappingResult,
   type AnyBlockNoteDocumentDefinition,
@@ -40,6 +41,13 @@ type SessionInternals = Readonly<{
 }>;
 
 const internals = new WeakMap<object, SessionInternals>();
+
+function canMutate(access: BlockNoteAccess) {
+  return (
+    (access.mode === "editing" && access.edit) ||
+    (access.mode === "suggesting" && access.suggest)
+  );
+}
 
 export function getBlockNoteSessionInternals(session: object) {
   const value = internals.get(session);
@@ -351,7 +359,7 @@ export async function createBlockNoteSessionWithDependencies<
       runtimeOptions,
       doc,
     ) as unknown as BlockNoteEditorFor<Document>;
-    editor.isEditable = state.access.edit || state.access.suggest;
+    editor.isEditable = canMutate(state.access);
     stopBeforeChange = editor.onBeforeChange(({ tr }) => {
       if (
         !tr.docChanged ||
@@ -361,12 +369,12 @@ export async function createBlockNoteSessionWithDependencies<
         return true;
       }
       const access = options.access.get();
-      if (access.edit || access.suggest) return true;
+      if (canMutate(access)) return true;
       events.emit("accessRejected", { action: "edit", access });
       return false;
     });
     stopAccess = options.access.subscribe((access) => {
-      if (editor) editor.isEditable = access.edit || access.suggest;
+      if (editor) editor.isEditable = canMutate(access);
       publish({ access });
     });
     const signals = {

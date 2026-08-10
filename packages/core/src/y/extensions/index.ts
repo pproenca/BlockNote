@@ -18,6 +18,7 @@ import { createYjsVersioningAdapter } from "./Versioning.js";
 import { CollaborationUser, YCursorExtension } from "./YCursorPlugin.js";
 import type { GetAttributionMarkClassName } from "./YAttributionMarks.js";
 import { YSyncExtension } from "./YSync.js";
+import { YUndoExtension } from "./YUndo.js";
 
 export type CollaborationOptions = {
   /**
@@ -99,6 +100,7 @@ export const CollaborationExtension = createExtension(
           : null,
         RelativePositionMappingExtension(),
         YSyncExtension(optionsWithUserStore),
+        YUndoExtension(options),
         YCursorExtension(options),
         options.versioningEndpoints
           ? VersioningExtension({
@@ -154,3 +156,4 @@ export * from "./Versioning.js";
 export * from "./YAttributionMarks.js";
 export * from "./YCursorPlugin.js";
 export * from "./YSync.js";
+export * from "./YUndo.js";

@@ -1,5 +1,10 @@
-import { expect, expectTypeOf, it } from "vite-plus/test";
-import { createExtension, ExtensionOptions } from "./BlockNoteExtension.js";
+import { expect, expectTypeOf, it, vi } from "vite-plus/test";
+
+import {
+  createExtension,
+  createStore,
+  ExtensionOptions,
+} from "./BlockNoteExtension.js";
 import { BlockNoteEditor } from "./BlockNoteEditor.js";
 
 const editor = BlockNoteEditor.create();
@@ -131,4 +136,18 @@ it("creates immutable semantic extension configuration", () => {
     configured({ editor });
   };
   expectTypeOf(checkOpaqueConfiguration).toBeFunction();
+});
+
+it("supports TanStack React Store 0.7 and 0.11 consumers", () => {
+  const store = createStore({ count: 0 });
+  const listener = vi.fn();
+  const stop = store.subscribe(listener);
+
+  expect(store.get()).toEqual({ count: 0 });
+  expect(stop.unsubscribe).toBe(stop);
+
+  store.setState({ count: 1 });
+  expect(listener).toHaveBeenCalled();
+
+  stop();
 });

@@ -315,7 +315,9 @@ export const BlockNoteViewEditor = (props: { children?: ReactNode }) => {
       // removes the `tabIndex="0"` attribute we set (see
       // `BlockNoteEditor.ts`). Ideally though, this logic would exist in a
       // separate hook.
-      editor.isEditable = ctx.editorProps.editable !== false;
+      if (ctx.editorProps.editable !== undefined) {
+        editor.isEditable = ctx.editorProps.editable;
+      }
       // Since we are not using TipTap's React Components, we need to set up the contentComponent it expects
       // This is a simple replacement for the state management that Tiptap does internally
       editor._tiptapEditor.contentComponent = portalManager;

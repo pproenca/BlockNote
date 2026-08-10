@@ -33,6 +33,10 @@ const viewing = Object.freeze({
   suggest: false,
   review: false,
 });
+const viewingWithEditCapability = Object.freeze({
+  ...editing,
+  mode: "viewing" as const,
+});
 const document = defineBlockNoteDocument({
   id: "session-test",
   version: "1",
@@ -161,6 +165,18 @@ describe("createBlockNoteSession", () => {
     fixture.access.set(viewing);
 
     expect(session.getState().access).toStrictEqual(viewing);
+    expect(session.editor.isEditable).toBe(false);
+  });
+
+  it("keeps viewing mode read only when edit capability is retained", async () => {
+    const fixture = harness();
+    const session = await createBlockNoteSessionWithDependencies(
+      fixture.options,
+      fixture.dependencies,
+    );
+    fixture.access.set(viewingWithEditCapability);
+
+    expect(session.getState().access).toStrictEqual(viewingWithEditCapability);
     expect(session.editor.isEditable).toBe(false);
   });
 

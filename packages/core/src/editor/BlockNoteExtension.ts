@@ -382,9 +382,30 @@ export function createExtension(
   return extensionFactory as any;
 }
 
+type CompatibleUnsubscribe = (() => void) & {
+  readonly unsubscribe: () => void;
+};
+
+type CompatibleExtensionStore<T> = Omit<Store<T>, "subscribe"> & {
+  get(): T;
+  subscribe(
+    listener: Parameters<Store<T>["subscribe"]>[0],
+  ): CompatibleUnsubscribe;
+};
+
 export function createStore<T = any>(
   initialState: T,
   options?: StoreOptions<T>,
-): Store<T> {
-  return new Store(initialState, options);
+): CompatibleExtensionStore<T> {
+  const store = new Store(initialState, options);
+  const subscribe = store.subscribe;
+
+  return Object.assign(store, {
+    get: () => store.state,
+    subscribe(listener: Parameters<Store<T>["subscribe"]>[0]) {
+      const stop = subscribe(listener) as CompatibleUnsubscribe;
+      Object.defineProperty(stop, "unsubscribe", { value: stop });
+      return stop;
+    },
+  });
 }
