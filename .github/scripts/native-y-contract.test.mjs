@@ -179,3 +179,28 @@ test("installs Chromium before the production Next.js browser check", async () =
     "Chromium must install before the Next.js integration test",
   );
 });
+
+test("builds bundle stats without enabling a soft release", async () => {
+  const workflow = await readFile(
+    path.join(root, ".github/workflows/build.yml"),
+    "utf8",
+  );
+  const nextIntegration = workflow.indexOf(
+    "run: NEXTJS_TEST_MODE=build vp test run src/unit/nextjs/serverUtil.test.ts",
+  );
+  const statsBuild = workflow.indexOf(
+    "run: vp build\n        working-directory: playground",
+    nextIntegration,
+  );
+  const statsUpload = workflow.indexOf(
+    "webpackStatsFile: ./playground/dist/webpack-stats.json",
+    nextIntegration,
+  );
+
+  assert.ok(statsBuild > nextIntegration, "Playground stats must be built");
+  assert.ok(statsUpload > statsBuild, "Stats must be built before upload");
+  assert.match(
+    workflow,
+    /- name: Soft release\n\s+if: \$\{\{ false \}\}\n\s+id: soft-release/,
+  );
+});

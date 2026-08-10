@@ -50,6 +50,10 @@ jobs:
         run: NEXTJS_TEST_MODE=build vp test run src/unit/nextjs/serverUtil.test.ts
         working-directory: tests
 
+      - name: Build editor bundle stats
+        run: vp build
+        working-directory: playground
+
       - name: Upload webpack stats artifact (editor)
         uses: relative-ci/agent-upload-artifact-action@a2b5741b4f7e6a989c84ec1a3059696b23c152e5 # v2
         with:
@@ -57,8 +61,9 @@ jobs:
           artifactName: relative-ci-artifacts-editor
 
       - name: Soft release
+        if: ${{ false }}
         id: soft-release
-        run: vp dlx pkg-pr-new publish './packages/*' # TODO disabled only for AI branch--compact
+        run: vp dlx pkg-pr-new publish './packages/*'
 
   e2e:
     # Vitest Browser Mode runs in the Playwright Linux container — the same
