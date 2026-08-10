@@ -110,6 +110,12 @@ const dependencyFields = [
   "optionalDependencies",
   "peerDependencies",
 ];
+const nativeY = Object.freeze({
+  alias: "@y/y",
+  name: "@pproenca/y",
+  version: "14.0.0-rc.23-y001.0",
+});
+const nativeYSpecifier = `npm:${nativeY.name}@${nativeY.version}`;
 
 export function parseDownstreamReleaseTag(tag) {
   const match = /^pf-v(\d+\.\d+\.\d+)\.(0|[1-9]\d*)$/.exec(tag);
@@ -194,6 +200,15 @@ function validateInternalDependencies(
       manifest[field] ?? {},
     )) {
       const dependencyPackage = packageByUpstreamName.get(dependencyName);
+
+      if (dependencyName === nativeY.alias) {
+        if (value !== nativeYSpecifier) {
+          throw new Error(
+            `${manifest.name} ${field}.${dependencyName} must be ${nativeYSpecifier}; received ${value}`,
+          );
+        }
+        continue;
+      }
 
       if (!dependencyPackage) {
         continue;
@@ -281,7 +296,9 @@ export async function prepareDownstreamManifests({ root, release }) {
         for (const dependencyName of Object.keys(next[field] ?? {})) {
           const dependencyPackage = packageByUpstreamName.get(dependencyName);
 
-          if (dependencyPackage) {
+          if (dependencyName === nativeY.alias) {
+            next[field][dependencyName] = nativeYSpecifier;
+          } else if (dependencyPackage) {
             next[field][dependencyName] = expectedDependencyValue(
               dependencyPackage,
               release,
@@ -544,14 +561,24 @@ if ("window" in globalThis || "document" in globalThis) {
 }
 
 function createConsumerTypeProbe() {
-  return `${downstreamPackages
-    .map(
-      ({ upstreamName }, index) =>
-        `import * as package_${index} from ${JSON.stringify(upstreamName)};`,
-    )
-    .join("\n")}\n\nvoid [${downstreamPackages
-    .map((_, index) => `package_${index}`)
-    .join(", ")}];\n`;
+  const contracts = downstreamPackages.flatMap(({ publicImports }) =>
+    publicImports,
+  );
+  const imports = [];
+  const bindings = [];
+
+  for (const [contractIndex, contract] of contracts.entries()) {
+    const names = contract.exports.map((exportName, exportIndex) => {
+      const binding = `contract_${contractIndex}_${exportIndex}`;
+      bindings.push(binding);
+      return `${exportName} as ${binding}`;
+    });
+    imports.push(
+      `import { ${names.join(", ")} } from ${JSON.stringify(contract.specifier)};`,
+    );
+  }
+
+  return `${imports.join("\n")}\n\nvoid [${bindings.join(", ")}];\n`;
 }
 
 export async function createDownstreamConsumer({
@@ -577,7 +604,8 @@ export async function createDownstreamConsumer({
     ]),
   );
   const dependencies = {};
-  const overrides = {};
+  const overrides = { [nativeY.alias]: nativeYSpecifier };
+  dependencies[nativeY.alias] = nativeYSpecifier;
 
   for (const { manifest, packageDefinition } of records) {
     const tarball = consumerTarballPath(
@@ -655,7 +683,7 @@ export async function createDownstreamConsumer({
   ]);
 }
 
-async function collectInstalledBlockNotePackages(directory, result = []) {
+async function collectInstalledContractPackages(directory, result = []) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === ".bin") {
       continue;
@@ -669,7 +697,9 @@ async function collectInstalledBlockNotePackages(directory, result = []) {
       if (
         typeof manifest.name === "string" &&
         (manifest.name.startsWith("@blocknote/") ||
-          manifest.name.startsWith("@pproenca/blocknote-"))
+          manifest.name.startsWith("@pproenca/blocknote-") ||
+          manifest.name === nativeY.alias ||
+          manifest.name === nativeY.name)
       ) {
         result.push({
           directory: await realpath(child),
@@ -683,7 +713,7 @@ async function collectInstalledBlockNotePackages(directory, result = []) {
       }
     }
 
-    await collectInstalledBlockNotePackages(child, result);
+    await collectInstalledContractPackages(child, result);
   }
 
   return result;
@@ -695,7 +725,7 @@ export async function validateDownstreamConsumer({
 }) {
   const nodeModules = path.join(consumerDirectory, "node_modules");
   const consumerRoot = `${await realpath(consumerDirectory)}${path.sep}`;
-  const installed = await collectInstalledBlockNotePackages(nodeModules);
+  const installed = await collectInstalledContractPackages(nodeModules);
 
   for (const packageDefinition of downstreamPackages) {
     const aliasDirectory = path.join(
@@ -742,6 +772,33 @@ export async function validateDownstreamConsumer({
         .map(({ name, version }) => `${name}@${version}`)
         .join(", ")}`,
     );
+  }
+
+  const nativeAliasDirectory = path.join(
+    nodeModules,
+    ...nativeY.alias.split("/"),
+  );
+  const resolvedNativeAlias = await realpath(nativeAliasDirectory);
+  const nativeManifest = JSON.parse(
+    await readFile(path.join(nativeAliasDirectory, "package.json"), "utf8"),
+  );
+  const nativeCopies = new Set(
+    installed
+      .filter(({ name }) => name === nativeY.name)
+      .map(({ directory }) => directory),
+  );
+  if (
+    nativeManifest.name !== nativeY.name ||
+    nativeManifest.version !== nativeY.version ||
+    nativeCopies.size !== 1 ||
+    !nativeCopies.has(resolvedNativeAlias)
+  ) {
+    throw new Error(
+      `${nativeY.alias} must resolve once to ${nativeY.name}@${nativeY.version}`,
+    );
+  }
+  if (installed.some(({ name }) => name === nativeY.alias)) {
+    throw new Error(`Consumer installed forbidden upstream ${nativeY.alias}`);
   }
 }
 

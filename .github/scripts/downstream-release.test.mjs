@@ -38,6 +38,10 @@ async function createPackageTree() {
             packageDefinition.upstreamName === "@blocknote/react"
               ? { "@blocknote/core": "^0.52.1" }
               : undefined,
+          dependencies:
+            packageDefinition.upstreamName === "@blocknote/core"
+              ? { "@y/y": "^14.0.0-0" }
+              : undefined,
         },
         null,
         2,
@@ -111,6 +115,11 @@ await test("validates the release candidate inside the privileged job", async ()
     publishStep,
     /npm publish "\$tarball_path" --registry=https:\/\/registry\.npmjs\.org /,
   );
+  const nativeYPreflight = publishStep.indexOf(
+    'npm view "@pproenca/y@14.0.0-rc.23-y001.0" version',
+  );
+  assert.ok(nativeYPreflight > registryStart);
+  assert.ok(nativeYPreflight < publishStep.indexOf("while IFS="));
   assert.doesNotMatch(
     publishStep,
     /require\('\.\/artifacts\/release\.json'\)\.distributionTag/,
@@ -132,6 +141,13 @@ await test("prepares one exact downstream manifest set", async () => {
   assert.equal(
     react.peerDependencies["@blocknote/core"],
     "npm:@pproenca/blocknote-core@0.52.1-pf.7",
+  );
+  const core = JSON.parse(
+    await readFile(path.join(root, "packages/core/package.json"), "utf8"),
+  );
+  assert.equal(
+    core.dependencies["@y/y"],
+    "npm:@pproenca/y@14.0.0-rc.23-y001.0",
   );
 });
 
@@ -328,6 +344,7 @@ await test("creates one hermetic Product-style downstream consumer", async () =>
     "@blocknote/react",
     "@blocknote/server-util",
     "@blocknote/test-utils",
+    "@y/y",
   ]);
   assert.equal(
     manifest.dependencies["@blocknote/core"],
@@ -337,4 +354,21 @@ await test("creates one hermetic Product-style downstream consumer", async () =>
     workspace,
     /"@blocknote\/core": "file:.*pproenca-blocknote-core-0\.52\.1-pf\.7\.tgz"/,
   );
+  assert.equal(
+    manifest.dependencies["@y/y"],
+    "npm:@pproenca/y@14.0.0-rc.23-y001.0",
+  );
+  assert.match(
+    workspace,
+    /"@y\/y": "npm:@pproenca\/y@14\.0\.0-rc\.23-y001\.0"/,
+  );
+
+  const typeContract = await readFile(
+    path.join(consumerDirectory, "contract.mts"),
+    "utf8",
+  );
+  assert.match(typeContract, /from "@blocknote\/core\/persistence"/);
+  assert.match(typeContract, /blockNotePersistence/);
+  assert.match(typeContract, /from "@blocknote\/server-util\/node"/);
+  assert.match(typeContract, /serveBlockNoteCollaboration/);
 });

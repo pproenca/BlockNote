@@ -25,7 +25,7 @@ FROM mcr.microsoft.com/playwright:v1.60.0-noble
 WORKDIR /repo/platform/blocknote
 
 # pnpm matching the repo's packageManager.
-RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 
 # Copy ONLY the dependency manifests — every workspace member's package.json plus
 # the lockfile/workspace file — preserving their paths with --parents. These are

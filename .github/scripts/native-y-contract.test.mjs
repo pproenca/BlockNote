@@ -54,7 +54,7 @@ test("fetches native Y before every standalone install", async () => {
     const lines = source.split("\n");
     const installs = lines
       .map((line, index) => ({ line, index }))
-      .filter(({ line }) => /^\s*run: vp install(?:\s|$)/.test(line));
+      .filter(({ line }) => /^\s*(?:-\s*)?run: vp install(?:\s|$)/.test(line));
     assert.ok(installs.length > 0, `${workflow} must contain an install`);
     for (const install of installs) {
       const checkout = lines.findLastIndex(
@@ -72,4 +72,24 @@ test("fetches native Y before every standalone install", async () => {
       );
     }
   }
+});
+
+test("uses the workspace pnpm version in release and browser environments", async () => {
+  const packageManager = JSON.parse(
+    await readFile(path.join(root, "package.json"), "utf8"),
+  ).packageManager;
+  const version = packageManager.replace("pnpm@", "");
+  const workflow = await readFile(
+    path.join(root, ".github/workflows/downstream-release.yml"),
+    "utf8",
+  );
+  const dockerfile = await readFile(path.join(root, "tests/Dockerfile"), "utf8");
+
+  for (const match of workflow.matchAll(/^\s*version: (\d+\.\d+\.\d+)$/gm)) {
+    assert.equal(match[1], version);
+  }
+  assert.match(
+    dockerfile,
+    new RegExp(`pnpm@${version.replaceAll(".", "\\.")}`),
+  );
 });
