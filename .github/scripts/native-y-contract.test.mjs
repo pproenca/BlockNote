@@ -93,3 +93,43 @@ test("uses the workspace pnpm version in release and browser environments", asyn
     new RegExp(`pnpm@${version.replaceAll(".", "\\.")}`),
   );
 });
+
+test("builds native Y before standalone package builds and typechecks", async () => {
+  const manifest = JSON.parse(
+    await readFile(path.join(root, "package.json"), "utf8"),
+  );
+  assert.equal(
+    manifest.scripts["build:native-y"],
+    "pnpm --filter @pproenca/y run build",
+  );
+  assert.match(manifest.scripts.build, /^pnpm run build:native-y && /);
+
+  const orchestratedBuilds = [
+    ".github/workflows/build.yml",
+    ".github/workflows/fresh-install-tests.yml",
+    ".github/workflows/publish.yaml",
+  ];
+  for (const workflow of orchestratedBuilds) {
+    const source = await readFile(path.join(root, workflow), "utf8");
+    const install = source.indexOf("vp install");
+    const build = source.indexOf("run: pnpm run build\n", install);
+
+    assert.ok(install >= 0, `${workflow} must install dependencies`);
+    assert.ok(build > install, `${workflow} must use the sequenced root build`);
+    assert.doesNotMatch(source, /run: vp run -r build/);
+  }
+
+  const downstreamWorkflow = ".github/workflows/downstream-release.yml";
+  const downstream = await readFile(path.join(root, downstreamWorkflow), "utf8");
+  const install = downstream.indexOf("vp install");
+  const nativeBuild = downstream.indexOf(
+    "run: pnpm run build:native-y\n",
+    install,
+  );
+  const typecheck = downstream.indexOf("run: pnpm typecheck\n", install);
+  assert.ok(nativeBuild > install, `${downstreamWorkflow} must build native Y`);
+  assert.ok(
+    typecheck > nativeBuild,
+    `${downstreamWorkflow} must build native Y before typecheck`,
+  );
+});

@@ -45,7 +45,7 @@ jobs:
         run: cp README.md packages/core/README.md && cp README.md packages/react/README.md
 
       - name: Build packages
-        run: vp run -r build
+        run: pnpm run build
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

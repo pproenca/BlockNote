@@ -82,7 +82,7 @@ jobs:
 
       - id: build_packages
         name: Build packages
-        run: vp run -r build
+        run: pnpm run build
 
       - id: run_unit_tests
         name: Run unit tests

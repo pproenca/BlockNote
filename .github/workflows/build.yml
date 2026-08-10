@@ -34,7 +34,7 @@ jobs:
         run: vp install
 
       - name: Build packages
-        run: vp run -r build
+        run: pnpm run build
 
       - name: Lint packages
         run: vp lint

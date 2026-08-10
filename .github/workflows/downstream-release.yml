@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile
 
+      - name: Build native Y
+        run: pnpm run build:native-y
+
       - name: Validate release metadata
         env:
           RELEASE_TAG: ${{ github.ref_name }}
