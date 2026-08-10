@@ -1,12 +1,15 @@
 /** @vitest-environment node */
 import {
   BlockNoteSchema,
+  CommentsExtension,
   blockNoteDocumentBinding,
   createBlockNoteAccess,
   defineBlockNoteDocument,
   type AnyBlockNoteDocumentDefinition,
   type BlockNoteEditorFor,
 } from "@blocknote/core";
+import type { ThreadStore } from "@blocknote/core/comments";
+import { blockNoteCommentAnchorInternals } from "@blocknote/core/comments/internal";
 import { blockNoteBootstrapInternals } from "@blocknote/core/persistence/internal";
 import { getBlockNoteDocumentInternals } from "@blocknote/core/runtime";
 import * as Y from "@y/y";
@@ -14,6 +17,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { createBlockNoteSessionWithDependencies } from "./session.js";
 import type { BlockNoteProviderSignals } from "./provider/hocuspocus-provider.js";
+import type { BlockNoteSessionOptions } from "./session-types.js";
 
 const editing = Object.freeze({
   mode: "editing" as const,
@@ -35,7 +39,12 @@ const document = defineBlockNoteDocument({
   schema: BlockNoteSchema.create(),
 });
 
-function bootstrap(definition: AnyBlockNoteDocumentDefinition = document) {
+function bootstrap(
+  definition: AnyBlockNoteDocumentDefinition = document,
+  verificationBundle?: ReturnType<
+    typeof blockNoteCommentAnchorInternals.createVerificationBundle
+  >,
+) {
   const doc = new Y.Doc();
   try {
     return blockNoteBootstrapInternals.create({
@@ -44,6 +53,7 @@ function bootstrap(definition: AnyBlockNoteDocumentDefinition = document) {
       definitionVersion: definition.version,
       definitionFingerprint:
         getBlockNoteDocumentInternals(definition).formatFingerprint,
+      verificationBundle,
       checkpoint: Y.encodeStateAsUpdate(doc),
     });
   } finally {
@@ -57,6 +67,9 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
   const providerDestroy = vi.fn();
   const connect = vi.fn();
   let signals!: BlockNoteProviderSignals;
+  let editorInput:
+    | BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>
+    | undefined;
   const fakeEditor = {
     isEditable: true,
     onBeforeChange: vi.fn(() => vi.fn()),
@@ -64,7 +77,12 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
   } as unknown as BlockNoteEditorFor<typeof document>;
   const dependencies = {
     createDocument: () => new Y.Doc({ gc: false }),
-    createEditor: () => fakeEditor,
+    createEditor: (
+      input: BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>,
+    ) => {
+      editorInput = input;
+      return fakeEditor;
+    },
     createProvider: (input: { signals: BlockNoteProviderSignals }) => {
       signals = input.signals;
       if (overrides.providerFailure) throw overrides.providerFailure;
@@ -92,6 +110,9 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
       },
     },
     providerDestroy,
+    get editorInput() {
+      return editorInput;
+    },
     get signals() {
       return signals;
     },
@@ -181,5 +202,45 @@ describe("createBlockNoteSession", () => {
       ),
     ).rejects.toMatchObject({ code: "offline-unavailable" });
     expect(partial.editorDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves external comment stores while adding session services", async () => {
+    const fixture = harness();
+    const threadStore = {
+      getSnapshot: vi.fn(),
+      subscribe: vi.fn(),
+    } as unknown as ThreadStore;
+    const resolveUsers = async () => [];
+    const externalDocument = defineBlockNoteDocument({
+      id: "session-external-comments",
+      version: "1",
+      schema: BlockNoteSchema.create(),
+      extensions: [CommentsExtension({ target: "external" })],
+    });
+    const verificationBundle =
+      blockNoteCommentAnchorInternals.createVerificationBundle({
+        revision: 1,
+        keys: [{ keyId: "active", publicKey: new Uint8Array(32).fill(3) }],
+      });
+
+    await createBlockNoteSessionWithDependencies(
+      {
+        ...fixture.options,
+        document: externalDocument,
+        bootstrap: bootstrap(externalDocument, verificationBundle),
+        context: { commentsExternal: { threadStore, resolveUsers } },
+      },
+      fixture.dependencies,
+    );
+
+    const external = fixture.editorInput!.context.commentsExternal;
+    expect(external.threadStore).toBe(threadStore);
+    expect(external.resolveUsers).toBe(resolveUsers);
+    expect(external.access).toBe(fixture.access);
+    expect(external.isOnline()).toBe(false);
+    fixture.signals.status("online");
+    expect(external.isOnline()).toBe(true);
+    expect(external.capture).toBeTypeOf("function");
+    expect(external.verifier).toBeTypeOf("object");
   });
 });

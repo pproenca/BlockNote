@@ -314,6 +314,16 @@ export async function createBlockNoteSessionWithDependencies<
         "target" in extension.options &&
         extension.options.target === "external",
     );
+    const configuredExternal =
+      "commentsExternal" in options.context
+        ? options.context.commentsExternal
+        : undefined;
+    if (externalComments && !configuredExternal) {
+      throw new BlockNoteError(
+        "incompatible-document",
+        "External comments require a thread store and user resolver.",
+      );
+    }
     if (externalComments && !verifier) {
       throw new BlockNoteError(
         "incompatible-document",
@@ -324,9 +334,10 @@ export async function createBlockNoteSessionWithDependencies<
       ...options,
       context: {
         ...options.context,
-        ...(verifier
+        ...(externalComments && configuredExternal && verifier
           ? {
               commentsExternal: {
+                ...configuredExternal,
                 access: options.access,
                 isOnline: () => state.connection === "online",
                 capture: mapping.capture,

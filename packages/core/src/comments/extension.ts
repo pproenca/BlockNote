@@ -7,7 +7,10 @@ import {
   createStore,
   ExtensionOptions,
 } from "../editor/BlockNoteExtension.js";
-import type { BlockNoteEmptyContext } from "../document/BlockNoteDocumentExtension.js";
+import type {
+  BlockNoteDocumentExtension,
+  BlockNoteEmptyContext,
+} from "../document/BlockNoteDocumentExtension.js";
 import { ShowSelectionExtension } from "../extensions/ShowSelection/ShowSelection.js";
 import { normalizeToUserStore, UserStoreOrResolver } from "../user/index.js";
 import { CustomBlockNoteSchema } from "../schema/schema.js";
@@ -21,15 +24,28 @@ import {
 import type { BlockNoteAccessStore } from "../access/BlockNoteAccess.js";
 import type { BlockNoteCommentAnchorCapture } from "./external/BlockNoteCommentAnchorCapture.js";
 
-type CommentsOptions = {
+type DocumentCommentsOptions = {
+  target?: "document";
   threadStore: ThreadStore;
   resolveUsers: UserStoreOrResolver;
   schema?: CustomBlockNoteSchema<any, any, any>;
   confirmBeforeDiscard?: boolean;
-  target?: "document" | "external";
 };
 
+type ExternalCommentsOptions = {
+  target: "external";
+  schema?: CustomBlockNoteSchema<any, any, any>;
+  confirmBeforeDiscard?: boolean;
+};
+
+type CommentsOptions = DocumentCommentsOptions | ExternalCommentsOptions;
+
 export interface BlockNoteExternalCommentsContext {
+  readonly threadStore: ThreadStore;
+  readonly resolveUsers: UserStoreOrResolver;
+}
+
+interface ResolvedExternalCommentsContext extends BlockNoteExternalCommentsContext {
   readonly access: BlockNoteAccessStore;
   readonly isOnline: () => boolean;
   readonly capture: (range: {
@@ -42,6 +58,20 @@ export interface BlockNoteExternalCommentsContext {
 type CommentsContext =
   | BlockNoteEmptyContext
   | { readonly commentsExternal: BlockNoteExternalCommentsContext };
+
+function isResolvedExternalCommentsContext(
+  value: BlockNoteExternalCommentsContext | undefined,
+): value is ResolvedExternalCommentsContext {
+  return (
+    !!value &&
+    "access" in value &&
+    "isOnline" in value &&
+    typeof value.isOnline === "function" &&
+    "capture" in value &&
+    typeof value.capture === "function" &&
+    "verifier" in value
+  );
+}
 
 const PLUGIN_KEY = new PluginKey("blocknote-comments");
 
@@ -86,18 +116,38 @@ function getUpdatedThreadPositions(doc: Node, markType: string) {
   return threadPositions;
 }
 
-export const CommentsExtension = createExtension(
+const commentsExtensionFactory = createExtension(
   ({
     editor,
-    options: {
-      schema: commentEditorSchema,
-      threadStore,
-      resolveUsers,
-      confirmBeforeDiscard = true,
-      target = "document",
-    },
+    options,
     context,
   }: ExtensionOptions<CommentsOptions, CommentsContext>) => {
+    const {
+      schema: commentEditorSchema,
+      confirmBeforeDiscard = true,
+      target = "document",
+    } = options;
+    const configuredExternal =
+      "commentsExternal" in context ? context.commentsExternal : undefined;
+    const externalContext =
+      target === "external" &&
+      isResolvedExternalCommentsContext(configuredExternal)
+        ? configuredExternal
+        : undefined;
+    if (target === "external" && !externalContext) {
+      throw new BlockNoteError(
+        "incompatible-document",
+        "External comments require the collaboration session context.",
+      );
+    }
+    const threadStore =
+      options.target === "external"
+        ? externalContext!.threadStore
+        : options.threadStore;
+    const resolveUsers =
+      options.target === "external"
+        ? externalContext!.resolveUsers
+        : options.resolveUsers;
     if (!resolveUsers) {
       throw new Error(
         "resolveUsers is required to be defined when using comments",
@@ -113,13 +163,6 @@ export const CommentsExtension = createExtension(
     // shared store (see the option docs above).
     const userStore = normalizeToUserStore(resolveUsers);
     const markType = CommentMark.name;
-    const externalContext =
-      "commentsExternal" in context ? context.commentsExternal : undefined;
-    if (target === "external" && !externalContext) {
-      throw new Error(
-        "External comments require the collaboration session context.",
-      );
-    }
 
     const store = createStore(
       {
@@ -141,10 +184,7 @@ export const CommentsExtension = createExtension(
     );
     const externalRuntime =
       target === "external" && externalContext
-        ? createExternalCommentsRuntime({
-            threadStore,
-            ...externalContext,
-          })
+        ? createExternalCommentsRuntime(externalContext)
         : null;
     const guardedMutations = new Set([
       "createThread",
@@ -531,3 +571,32 @@ export const CommentsExtension = createExtension(
   },
   { name: "comments", version: "2" },
 );
+
+type CommentsExtensionInstance = ReturnType<
+  typeof commentsExtensionFactory
+>["~types"]["extension"];
+
+type ConfiguredCommentsExtension<
+  Options,
+  Context extends object,
+> = BlockNoteDocumentExtension<
+  "comments",
+  "2",
+  readonly [],
+  Options,
+  Context,
+  CommentsExtensionInstance
+>;
+
+export function CommentsExtension(
+  options: DocumentCommentsOptions,
+): ConfiguredCommentsExtension<DocumentCommentsOptions, BlockNoteEmptyContext>;
+export function CommentsExtension(
+  options: ExternalCommentsOptions,
+): ConfiguredCommentsExtension<
+  ExternalCommentsOptions,
+  { readonly commentsExternal: BlockNoteExternalCommentsContext }
+>;
+export function CommentsExtension(options: CommentsOptions) {
+  return commentsExtensionFactory(options);
+}
