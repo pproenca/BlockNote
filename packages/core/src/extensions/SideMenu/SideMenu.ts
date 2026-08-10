@@ -16,6 +16,7 @@ import {
 } from "../../editor/BlockNoteExtension.js";
 import { UiElementPosition } from "../../extensions-shared/UiElementPosition.js";
 import {
+  BlockIdentifier,
   BlockSchema,
   InlineContentSchema,
   StyleSchema,
@@ -141,6 +142,8 @@ export class SideMenuView<
 
   public isDragOrigin = false;
 
+  private destroyed = false;
+
   constructor(
     private readonly editor: BlockNoteEditor<BSchema, I, S>,
     private readonly pmView: EditorView,
@@ -193,6 +196,54 @@ export class SideMenuView<
     this.emitUpdate(this.state);
   };
 
+  private setVisibleBlock(node: HTMLElement, block: Block<BSchema, I, S>) {
+    this.hoveredBlock = node;
+    const blockContentBoundingBox = node.getBoundingClientRect();
+    const column = node.closest("[data-node-type=column]");
+    this.state = {
+      show: true,
+      referencePos: new DOMRect(
+        column
+          ? // Column elements have default padding, so use the first child's
+            // x coordinate. It is always a non-nested block here.
+            column.firstElementChild!.getBoundingClientRect().x
+          : (this.pmView.dom.firstChild as HTMLElement).getBoundingClientRect()
+              .x,
+        blockContentBoundingBox.y,
+        blockContentBoundingBox.width,
+        blockContentBoundingBox.height,
+      ),
+      block,
+    };
+    this.updateState(this.state);
+  }
+
+  showAtBlock(blockId?: string) {
+    if (this.destroyed || !this.editor.isEditable) {
+      return false;
+    }
+    const block = blockId
+      ? this.editor.getBlock(blockId)
+      : this.editor.getTextCursorPosition().block;
+    if (!block) {
+      return false;
+    }
+    const escape = this.pmView.dom.ownerDocument.defaultView?.CSS?.escape;
+    const node = escape
+      ? this.pmView.dom.querySelector<HTMLElement>(
+          `[data-id="${escape(block.id)}"]`,
+        )
+      : [...this.pmView.dom.querySelectorAll<HTMLElement>("[data-id]")].find(
+          (element) => element.dataset.id === block.id,
+        );
+    if (!node) {
+      return false;
+    }
+    this.setVisibleBlock(node, block);
+    this.menuFrozen = true;
+    return true;
+  }
+
   updateStateFromMousePos = () => {
     if (this.menuFrozen || !this.mousePos) {
       return;
@@ -235,33 +286,9 @@ export class SideMenuView<
       return;
     }
 
-    this.hoveredBlock = block.node;
-
     // Shows or updates elements.
     if (this.editor.isEditable) {
-      const blockContentBoundingBox = block.node.getBoundingClientRect();
-      const column = block.node.closest("[data-node-type=column]");
-      this.state = {
-        show: true,
-        referencePos: new DOMRect(
-          column
-            ? // We take the first child as column elements have some default
-              // padding. This is a little weird since this child element will
-              // be the first block, but since it's always non-nested and we
-              // only take the x coordinate, it's ok.
-              column.firstElementChild!.getBoundingClientRect().x
-            : (
-                this.pmView.dom.firstChild as HTMLElement
-              ).getBoundingClientRect().x,
-          blockContentBoundingBox.y,
-          blockContentBoundingBox.width,
-          blockContentBoundingBox.height,
-        ),
-        block: this.editor.getBlock(
-          this.hoveredBlock!.getAttribute("data-id")!,
-        )!,
-      };
-      this.updateState(this.state);
+      this.setVisibleBlock(block.node, this.editor.getBlock(block.id)!);
     }
   };
 
@@ -679,6 +706,7 @@ export class SideMenuView<
   }
 
   destroy() {
+    this.destroyed = true;
     if (this.state?.show) {
       this.state.show = false;
       this.emitUpdate(this.state);
@@ -796,6 +824,13 @@ export const SideMenuExtension = createExtension(({ editor }) => {
         view!.state.show = false;
         view!.emitUpdate(view!.state!);
       }
+    },
+
+    showAtBlock(block?: BlockIdentifier) {
+      return (
+        view?.showAtBlock(typeof block === "string" ? block : block?.id) ??
+        false
+      );
     },
   } as const;
 });
