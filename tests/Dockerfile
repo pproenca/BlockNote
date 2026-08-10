@@ -5,9 +5,10 @@
 # reason the old Playwright suite ran in Docker. The Vitest UI is HTTP-served, so
 # it's viewable from the host browser even though the browser itself is headless.
 #
-# Build context is the repo root. Host node_modules are NOT reused (they hold
-# macOS-native binaries — vite-plus napi, oxc, esbuild); deps are installed fresh
-# for Linux here.
+# The default build context is the BlockNote root; a named monorepo context
+# supplies only native Y's manifest and the root provider patch. Host
+# node_modules are NOT reused (they hold macOS-native binaries — vite-plus napi,
+# oxc, esbuild); deps are installed fresh for Linux here.
 #
 # The image deliberately holds NO package source and does NOT build the packages
 # to dist. The e2e suite resolves every @blocknote/* package to its src/ (see the
@@ -21,7 +22,7 @@
 #   Run:    pnpm e2e / e2e:ui / e2e:updateSnaps   (bind-mount live source)
 FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
-WORKDIR /work
+WORKDIR /repo/platform/blocknote
 
 # pnpm matching the repo's packageManager.
 RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
@@ -33,6 +34,8 @@ RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY --parents pnpm-lock.yaml pnpm-workspace.yaml **/package.json ./
 # pnpm patches are referenced by the lockfile and required during install.
 COPY patches ./patches
+COPY --from=monorepo patches/@hocuspocus__provider@4.4.0.patch /repo/patches/@hocuspocus__provider@4.4.0.patch
+COPY --from=monorepo platform/yjs/package.json /repo/platform/yjs/package.json
 
 # Install workspace deps (Linux binaries) + bootstrap the vite-plus toolchain
 # (the root `prepare` script runs `vp config`, which fetches vp's node runtime).
@@ -49,6 +52,6 @@ RUN SKIP_DOCS_POSTINSTALL=1 pnpm install --frozen-lockfile --filter '!docs'
 # sources are bind-mounted live by the run scripts, so they aren't copied here.)
 COPY examples ./examples
 
-WORKDIR /work/tests
+WORKDIR /repo/platform/blocknote/tests
 # Callers append flags, e.g. `docker run <img> --run` or `--ui --watch --no-open`.
 ENTRYPOINT ["pnpm", "exec", "vp", "test", "-c", "vite.config.browser.ts"]

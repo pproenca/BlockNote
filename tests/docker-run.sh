@@ -16,6 +16,7 @@
 set -eo pipefail
 
 cd "$(dirname "$0")/.."
+source tests/docker-deps-hash.sh
 
 docker_flags=()
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
@@ -31,46 +32,30 @@ entrypoint_args=("$@")
 # baked-in examples (lockfile, workspace file, all package.json files, patches,
 # and example sources). When the hashes differ the image is rebuilt in place
 # (Docker's layer cache makes this fast when only a leaf changed).
-_dep_files() {
-  # Print the sorted list of files that are baked into the image.
-  {
-    echo pnpm-lock.yaml
-    echo pnpm-workspace.yaml
-    find patches examples \( -name node_modules -prune \) -o -type f -print 2>/dev/null
-    find . -name package.json \
-      -not -path '*/node_modules/*' \
-      -not -path '*/.git/*' \
-      -not -path '*/dist/*'
-  } | sort -u
-}
-_content_hash() {
-  # sha256 of the concatenated sorted file contents; shasum is available on
-  # macOS & Linux (util-linux / coreutils).
-  _dep_files | xargs shasum -a 256 -- 2>/dev/null | shasum -a 256 | cut -d' ' -f1
-}
-
-current_hash=$(_content_hash)
+current_hash=$(blocknote_e2e_content_hash)
 image_hash=$(docker inspect --format '{{index .Config.Labels "blocknote.deps-hash"}}' blocknote-e2e 2>/dev/null || true)
 
 if [ "$current_hash" != "$image_hash" ]; then
   echo "blocknote-e2e image is out of date (deps/examples changed) — rebuilding…" >&2
   docker build -t blocknote-e2e \
     --label "blocknote.deps-hash=$current_hash" \
+    --build-context monorepo=../.. \
     -f tests/Dockerfile .
 fi
 
 mounts=()
+container_root=/repo/platform/blocknote
 for src in packages/*/src; do
-  mounts+=(-v "$PWD/$src:/work/$src")
+  mounts+=(-v "$PWD/$src:$container_root/$src")
 done
 # The test files and browser config (callers iterate on these too).
 mounts+=(
-  -v "$PWD/tests/src:/work/tests/src"
-  -v "$PWD/tests/vite.config.browser.ts:/work/tests/vite.config.browser.ts"
-  -v "$PWD/tests/vitestSetup.browser.ts:/work/tests/vitestSetup.browser.ts"
+  -v "$PWD/tests/src:$container_root/tests/src"
+  -v "$PWD/tests/vite.config.browser.ts:$container_root/tests/vite.config.browser.ts"
+  -v "$PWD/tests/vitestSetup.browser.ts:$container_root/tests/vitestSetup.browser.ts"
 )
 if [ -d "$PWD/../yjs/src" ]; then
-  mounts+=(-v "$PWD/../yjs/src:/work/node_modules/.pnpm/@y+y@14.0.0-rc.23/node_modules/@y/y/src")
+  mounts+=(-v "$PWD/../yjs/src:/repo/platform/yjs/src")
 fi
 # The suggestion-gallery scenarios import the shared `testDocument` (aliased to
 # ../shared in vite.config.browser.ts). Only shared/package.json is baked into the
@@ -78,14 +63,14 @@ fi
 # transpiled at test time just like packages/*/src (mounting individual files
 # keeps the image's node_modules symlinks intact).
 mounts+=(
-  -v "$PWD/shared/testDocument.ts:/work/shared/testDocument.ts"
-  -v "$PWD/shared/formatConversionTestUtil.ts:/work/shared/formatConversionTestUtil.ts"
+  -v "$PWD/shared/testDocument.ts:$container_root/shared/testDocument.ts"
+  -v "$PWD/shared/formatConversionTestUtil.ts:$container_root/shared/formatConversionTestUtil.ts"
 )
 # Mount the report dir so the html reporter's output lands on the host instead
 # of being thrown away with the container. Created on the host first so docker
 # binds the dir (not an anonymous mountpoint).
 mkdir -p "$PWD/tests/playwright-report"
-mounts+=(-v "$PWD/tests/playwright-report:/work/tests/playwright-report")
+mounts+=(-v "$PWD/tests/playwright-report:$container_root/tests/playwright-report")
 
 # --init  : avoid PID-1 special treatment / zombie processes
 # --ipc=host : Chromium needs this in Docker to avoid OOM crashes
