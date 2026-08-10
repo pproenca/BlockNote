@@ -15,7 +15,11 @@ const reviewRoots = [
 
 function signature(doc: Y.Doc, name: string) {
   const value = doc.share.get(name);
-  return value === undefined ? "absent" : JSON.stringify(value.toJSON());
+  if (value === undefined) {
+    return "empty";
+  }
+  const json = value.toJSON();
+  return Object.keys(json).length === 0 ? "empty" : JSON.stringify(json);
 }
 
 function changed(before: Y.Doc, after: Y.Doc, names: readonly string[]) {
