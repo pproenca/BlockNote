@@ -76,7 +76,7 @@ export const downstreamPackages = Object.freeze([
       },
       {
         specifier: "@blocknote/server-util/headless",
-        exports: ["createBlockNoteDocumentService"],
+        exports: ["createBlockNoteDocumentService", "createBlockNoteProjector"],
       },
       {
         specifier: "@blocknote/server-util/collaboration",

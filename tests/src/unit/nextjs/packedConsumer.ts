@@ -121,6 +121,10 @@ export const packedPackageCases = [
         exportName: "createBlockNoteDocumentService",
       },
       {
+        specifier: "@blocknote/server-util/headless",
+        exportName: "createBlockNoteProjector",
+      },
+      {
         specifier: "@blocknote/server-util/collaboration",
         exportName: "createBlockNoteCollaboration",
       },

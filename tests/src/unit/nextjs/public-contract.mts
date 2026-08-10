@@ -1,5 +1,6 @@
 import {
   BlockNoteSchema,
+  CommentsExtension,
   blockNoteDocumentBinding,
   blockNotePersistence,
   createBlockNoteAccess,
@@ -9,8 +10,12 @@ import {
   type BlockNoteCheckpoint,
   type BlockNoteEditorFor,
   type BlockNoteRuntimeContext,
+  type ExtensionInstanceFromFactory,
   type ExtensionOptions,
+  type ThreadStore,
+  type UserStoreOrResolver,
 } from "@blocknote/core";
+import { SideMenuExtension } from "@blocknote/core/extensions";
 import type { BlockNoteSession } from "@blocknote/collaboration";
 import {
   createBlockNoteCollaboration,
@@ -22,6 +27,7 @@ import {
   useBlockNoteSessionState,
 } from "@blocknote/react";
 import { serveBlockNoteCollaboration } from "@blocknote/server-util/node";
+import { createBlockNoteProjector } from "@blocknote/server-util/headless";
 import {
   createBlockNoteTestClock,
   defineBlockNoteAuthorizationContract,
@@ -69,11 +75,24 @@ const document = createBlockNoteDocument({
   schema: BlockNoteSchema.create(),
   extensions: [Collaboration(), Comments(), Suggestions()],
 });
+const externalCommentsDocument = createBlockNoteDocument({
+  id: "packed-external-comments",
+  version: "1",
+  schema: BlockNoteSchema.create(),
+  extensions: [CommentsExtension({ target: "external" })],
+});
 type Context = BlockNoteRuntimeContext<typeof document>;
+type ExternalCommentsContext = BlockNoteRuntimeContext<
+  typeof externalCommentsDocument
+>;
 type Editor = BlockNoteEditorFor<typeof document>;
+type SideMenu = ExtensionInstanceFromFactory<typeof SideMenuExtension>;
 declare const context: Context;
 declare const editor: Editor;
+declare const externalThreadStore: ThreadStore;
+declare const resolveExternalUsers: UserStoreOrResolver;
 declare const session: BlockNoteSession<typeof document>;
+declare const sideMenu: SideMenu;
 declare const Provider: typeof BlockNoteSessionProvider;
 declare const nativeDoc: NativeYDoc;
 void context.endpoint;
@@ -82,6 +101,25 @@ void context.actorId;
 void editor.documentDefinition;
 void Provider;
 void nativeDoc;
+
+const externalCommentsContext: ExternalCommentsContext = {
+  commentsExternal: {
+    threadStore: externalThreadStore,
+    resolveUsers: resolveExternalUsers,
+  },
+};
+void externalCommentsContext.commentsExternal.threadStore;
+void externalCommentsContext.commentsExternal.resolveUsers;
+
+const projector = createBlockNoteProjector(document);
+type ProjectorInput = Parameters<typeof projector>[0];
+const acceptsOpaqueDoc: ProjectorInput["doc"] = {};
+void acceptsOpaqueDoc;
+
+const showsCurrentBlock: boolean = sideMenu.showAtBlock();
+const showsExplicitBlock: boolean = sideMenu.showAtBlock({ id: "packed" });
+void showsCurrentBlock;
+void showsExplicitBlock;
 
 function selectorInference() {
   return useBlockNoteSessionState({

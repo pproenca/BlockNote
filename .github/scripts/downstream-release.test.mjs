@@ -371,4 +371,5 @@ await test("creates one hermetic Product-style downstream consumer", async () =>
   assert.match(typeContract, /blockNotePersistence/);
   assert.match(typeContract, /from "@blocknote\/server-util\/node"/);
   assert.match(typeContract, /serveBlockNoteCollaboration/);
+  assert.match(typeContract, /createBlockNoteProjector/);
 });

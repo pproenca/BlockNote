@@ -588,15 +588,20 @@ type ConfiguredCommentsExtension<
   CommentsExtensionInstance
 >;
 
-export function CommentsExtension(
-  options: DocumentCommentsOptions,
-): ConfiguredCommentsExtension<DocumentCommentsOptions, BlockNoteEmptyContext>;
-export function CommentsExtension(
-  options: ExternalCommentsOptions,
-): ConfiguredCommentsExtension<
-  ExternalCommentsOptions,
-  { readonly commentsExternal: BlockNoteExternalCommentsContext }
->;
-export function CommentsExtension(options: CommentsOptions) {
-  return commentsExtensionFactory(options);
-}
+type CommentsExtensionFactory = {
+  (
+    options: DocumentCommentsOptions,
+  ): ConfiguredCommentsExtension<
+    DocumentCommentsOptions,
+    BlockNoteEmptyContext
+  >;
+  (
+    options: ExternalCommentsOptions,
+  ): ConfiguredCommentsExtension<
+    ExternalCommentsOptions,
+    { readonly commentsExternal: BlockNoteExternalCommentsContext }
+  >;
+};
+
+export const CommentsExtension =
+  commentsExtensionFactory as CommentsExtensionFactory;

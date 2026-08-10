@@ -7,7 +7,7 @@ import {
   defineBlockNoteDocument,
   type BlockNoteRuntimeContext,
 } from "../document/BlockNoteDocument.js";
-import type { BlockNoteEditor } from "../editor/BlockNoteEditor.js";
+import { BlockNoteEditor } from "../editor/BlockNoteEditor.js";
 import type { UserStoreOrResolver } from "../user/index.js";
 import { blockNoteCommentAnchorInternals } from "./internal.js";
 import { CommentsExtension } from "./extension.js";
@@ -105,6 +105,18 @@ describe("CommentsExtension", () => {
 
     expect(extension.threadStore).toBe(store);
     expect(extension.externalRuntime).toBeNull();
+  });
+
+  it("preserves factory identity for editor lookup", () => {
+    const store = threadStore("lookup");
+    const runtimeEditor = BlockNoteEditor.create({
+      extensions: [CommentsExtension({ threadStore: store, resolveUsers })],
+    });
+
+    expect(runtimeEditor.getExtension(CommentsExtension)?.threadStore).toBe(
+      store,
+    );
+    runtimeEditor.destroy();
   });
 
   it("rejects external context that was not enriched by a session", () => {

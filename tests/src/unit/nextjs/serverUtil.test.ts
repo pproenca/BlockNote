@@ -91,6 +91,13 @@ describe("built BlockNote package contracts", () => {
       createContentIdsFromUpdate: true,
     });
     expect(proof.engine.upstreamCopies).toEqual([]);
+    expect(proof.publicImports).toContainEqual(
+      expect.objectContaining({
+        packageName: "@blocknote/server-util",
+        specifier: "@blocknote/server-util/headless",
+        exportName: "createBlockNoteProjector",
+      }),
+    );
   }, 180_000);
 
   it("rejects missing and mixed artifact sets before installation", () => {
