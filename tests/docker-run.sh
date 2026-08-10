@@ -15,7 +15,7 @@
 # expansion under it, and both the flag and entrypoint-arg arrays may be empty.
 set -eo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+cd "$(dirname "$0")/.."
 
 docker_flags=()
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
@@ -69,6 +69,9 @@ mounts+=(
   -v "$PWD/tests/vite.config.browser.ts:/work/tests/vite.config.browser.ts"
   -v "$PWD/tests/vitestSetup.browser.ts:/work/tests/vitestSetup.browser.ts"
 )
+if [ -d "$PWD/../yjs/src" ]; then
+  mounts+=(-v "$PWD/../yjs/src:/work/node_modules/.pnpm/@y+y@14.0.0-rc.23/node_modules/@y/y/src")
+fi
 # The suggestion-gallery scenarios import the shared `testDocument` (aliased to
 # ../shared in vite.config.browser.ts). Only shared/package.json is baked into the
 # image (for the install), so mount the two source files it needs — they're

@@ -26,6 +26,7 @@ import { EmojiPicker } from "./EmojiPicker.js";
 import { ReactionBadge } from "./ReactionBadge.js";
 import { defaultCommentEditorSchema } from "./defaultCommentEditorSchema.js";
 import { useCommentUser } from "./useCommentUsers.js";
+import { useOptionalBlockNoteCommentsController } from "./useBlockNoteCommentsState.js";
 
 type CommentEditorActionsProps = {
   isFocused: boolean;
@@ -145,6 +146,7 @@ export const Comment = ({
   // TODO: if REST API becomes popular, all interactions (click handlers) should implement a loading state and error state
   // (or optimistic local updates)
   const comments = useExtension(CommentsExtension);
+  const commentsController = useOptionalBlockNoteCommentsController();
 
   const dict = useDictionary();
 
@@ -178,56 +180,76 @@ export const Comment = ({
 
   const onEditSubmit = useCallback(
     async (_event: MouseEvent) => {
-      await threadStore.updateComment({
+      const options = {
         commentId: comment.id,
         comment: {
           body: commentEditor.document,
         },
         threadId: thread.id,
-      });
+      };
+      if (commentsController) {
+        await commentsController.updateComment(options);
+      } else {
+        await threadStore.updateComment(options);
+      }
 
       setEditing(false);
     },
-    [comment, thread.id, commentEditor, threadStore],
+    [comment, thread.id, commentEditor, commentsController, threadStore],
   );
 
   const onDelete = useCallback(async () => {
-    await threadStore.deleteComment({
+    const options = {
       commentId: comment.id,
       threadId: thread.id,
-    });
-  }, [comment, thread.id, threadStore]);
+    };
+    await (commentsController
+      ? commentsController.deleteComment(options)
+      : threadStore.deleteComment(options));
+  }, [comment, commentsController, thread.id, threadStore]);
 
   const onReactionSelect = useCallback(
     async (emoji: string) => {
       if (threadStore.auth.canAddReaction(comment, emoji)) {
-        await threadStore.addReaction({
+        const options = {
           threadId: thread.id,
           commentId: comment.id,
           emoji,
-        });
+        };
+        await (commentsController
+          ? commentsController.addReaction(options)
+          : threadStore.addReaction(options));
       } else if (threadStore.auth.canDeleteReaction(comment, emoji)) {
-        await threadStore.deleteReaction({
+        const options = {
           threadId: thread.id,
           commentId: comment.id,
           emoji,
-        });
+        };
+        await (commentsController
+          ? commentsController.deleteReaction(options)
+          : threadStore.deleteReaction(options));
       }
     },
-    [threadStore, comment, thread.id],
+    [threadStore, commentsController, comment, thread.id],
   );
 
   const onResolve = useCallback(async () => {
-    await threadStore.resolveThread({
+    const options = {
       threadId: thread.id,
-    });
-  }, [thread.id, threadStore]);
+    };
+    await (commentsController
+      ? commentsController.resolveThread(options)
+      : threadStore.resolveThread(options));
+  }, [commentsController, thread.id, threadStore]);
 
   const onReopen = useCallback(async () => {
-    await threadStore.unresolveThread({
+    const options = {
       threadId: thread.id,
-    });
-  }, [thread.id, threadStore]);
+    };
+    await (commentsController
+      ? commentsController.reopenThread(options)
+      : threadStore.unresolveThread(options));
+  }, [commentsController, thread.id, threadStore]);
 
   const user = useCommentUser(comment.userId);
 

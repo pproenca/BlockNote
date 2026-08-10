@@ -30,6 +30,12 @@
     },
     {
       "path": "../collaboration-server"
+    },
+    {
+      "path": "../react"
+    },
+    {
+      "path": "../server-util"
     }
   ]
 }

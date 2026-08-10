@@ -42,7 +42,7 @@ describe("SuggestionsExtension", () => {
     expectTypeOf<PublicStore>().toEqualTypeOf<
       BlockNoteStore<readonly BlockNoteSuggestion[]>
     >();
-    expectTypeOf<HasTanStackState>().toEqualTypeOf<false>();
+    expectTypeOf<HasTanStackState>().toEqualTypeOf<true>();
   });
 
   it.each([

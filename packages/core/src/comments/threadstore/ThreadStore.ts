@@ -2,6 +2,8 @@ import type { BlockNoteEditor } from "../../editor/BlockNoteEditor.js";
 import type {
   BlockNoteThreadSnapshot,
   BlockNoteThreadStoreRevision,
+  BlockNoteCommentTarget,
+  BlockNoteCreateThreadCommand,
   CommentBody,
   CommentData,
   ThreadData,
@@ -15,6 +17,7 @@ type CreateThreadOptions<TThreadMetadata, TCommentMetadata> = {
     metadata?: TCommentMetadata;
   };
   metadata?: TThreadMetadata;
+  target?: BlockNoteCommentTarget;
 };
 
 type AddCommentOptions<TCommentMetadata> = {
@@ -71,6 +74,56 @@ export abstract class ThreadStore<
   abstract createThread(
     options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
   ): Promise<ThreadData<TThreadMetadata, TCommentMetadata>>;
+
+  createThreadCommand(
+    options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
+  ): BlockNoteCreateThreadCommand<
+    ThreadData<TThreadMetadata, TCommentMetadata>
+  > {
+    let inFlight: Promise<
+      ThreadData<TThreadMetadata, TCommentMetadata>
+    > | null = null;
+    let terminal: ThreadData<TThreadMetadata, TCommentMetadata> | undefined;
+    return Object.freeze({
+      execute: ({ signal }: { readonly signal?: AbortSignal } = {}) => {
+        signal?.throwIfAborted();
+        if (terminal) {
+          return Promise.resolve(terminal);
+        }
+        if (!inFlight) {
+          inFlight = this.createThread(options).then(
+            (thread) => {
+              terminal = thread;
+              return thread;
+            },
+            (error) => {
+              inFlight = null;
+              throw error;
+            },
+          );
+        }
+        if (!signal) {
+          return inFlight;
+        }
+        return new Promise<ThreadData<TThreadMetadata, TCommentMetadata>>(
+          (resolve, reject) => {
+            const abort = () => reject(signal.reason);
+            signal.addEventListener("abort", abort, { once: true });
+            void inFlight!.then(
+              (thread) => {
+                signal.removeEventListener("abort", abort);
+                resolve(thread);
+              },
+              (error) => {
+                signal.removeEventListener("abort", abort);
+                reject(error);
+              },
+            );
+          },
+        );
+      },
+    });
+  }
 
   abstract addComment(
     options: AddCommentOptions<TCommentMetadata>,

@@ -20,6 +20,7 @@ import { PositionPopover } from "../Popovers/PositionPopover.js";
 import { confirmDiscardUnsavedComment } from "./confirmDiscardUnsavedComment.js";
 import { defaultCommentEditorSchema } from "./defaultCommentEditorSchema.js";
 import { FloatingComposer } from "./FloatingComposer.js";
+import { useOptionalBlockNoteCommentsController } from "./useBlockNoteCommentsState.js";
 
 export default function FloatingComposerController<
   B extends BlockSchema = DefaultBlockSchema,
@@ -39,6 +40,7 @@ export default function FloatingComposerController<
   const dict = useDictionary();
 
   const comments = useExtension(CommentsExtension);
+  const commentsController = useOptionalBlockNoteCommentsController();
 
   const pendingComment = useExtensionState(CommentsExtension, {
     editor,
@@ -96,7 +98,11 @@ export default function FloatingComposerController<
               // Keep the composer open so the user can continue editing.
               return;
             }
-            comments.stopPendingComment();
+            if (commentsController) {
+              commentsController.closeComposer();
+            } else {
+              comments.stopPendingComment();
+            }
             editor.focus();
           }
         },
@@ -116,6 +122,7 @@ export default function FloatingComposerController<
     }),
     [
       comments,
+      commentsController,
       dict,
       editor,
       newCommentEditor,

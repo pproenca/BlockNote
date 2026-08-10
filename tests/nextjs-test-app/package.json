@@ -4,11 +4,11 @@
   "version": "0.0.0",
   "dependencies": {
     "@blocknote/core": "file:.tarballs/blocknote-core-0.50.0.tgz",
-    "@blocknote/mantine": "file:.tarballs/blocknote-mantine-0.50.0.tgz",
+    "@blocknote/collaboration": "file:.tarballs/blocknote-collaboration-0.50.0.tgz",
+    "@blocknote/collaboration-server": "file:.tarballs/blocknote-collaboration-server-0.50.0.tgz",
     "@blocknote/react": "file:.tarballs/blocknote-react-0.50.0.tgz",
     "@blocknote/server-util": "file:.tarballs/blocknote-server-util-0.50.0.tgz",
-    "@mantine/core": "^9.0.2",
-    "@mantine/hooks": "^9.0.2",
+    "@blocknote/test-utils": "file:.tarballs/blocknote-test-utils-0.50.0.tgz",
     "next": "^16.0.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"

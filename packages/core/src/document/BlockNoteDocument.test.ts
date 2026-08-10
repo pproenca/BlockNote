@@ -17,7 +17,10 @@ import {
   type BlockNoteRuntimeContext,
   type RegisteredBlockNoteDocument,
 } from "./BlockNoteDocument.js";
-import { getBlockNoteDocumentInternals } from "./BlockNoteDocumentInternals.js";
+import {
+  getBlockNoteDocumentInternals,
+  registerBlockNoteExtensionHeadlessProjection,
+} from "./BlockNoteDocumentInternals.js";
 
 interface AccessContext {
   readonly access: BlockNoteAccessStore;
@@ -100,6 +103,29 @@ describe("defineBlockNoteDocument", () => {
 
     expect(created.id).toBe("notes");
     expect(created.extensions).toEqual([]);
+  });
+
+  it("freezes private headless projection contributions off-definition", () => {
+    const extension = AccessExtension();
+    const contribution = (input: { readonly markdown: string }) => ({
+      searchText: input.markdown,
+    });
+    registerBlockNoteExtensionHeadlessProjection(extension, contribution);
+    const created = defineBlockNoteDocument({
+      id: "headless",
+      version: "1",
+      schema,
+      extensions: [extension],
+    });
+    const registered = getBlockNoteDocumentInternals(created);
+
+    expect(Object.keys(created)).not.toContain(
+      "headlessProjectionContributions",
+    );
+    expect(Object.isFrozen(registered.headlessProjectionContributions)).toBe(
+      true,
+    );
+    expect(registered.headlessProjectionContributions).toEqual([contribution]);
   });
 
   it("rejects duplicate extension names", () => {

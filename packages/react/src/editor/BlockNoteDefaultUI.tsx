@@ -10,6 +10,7 @@ import {
 import { lazy, Suspense } from "react";
 
 import { FilePanelController } from "../components/FilePanel/FilePanelController.js";
+import { BlockNoteCommentsController } from "../components/Comments/useBlockNoteCommentsState.js";
 import { FormattingToolbarController } from "../components/FormattingToolbar/FormattingToolbarController.js";
 import { LinkToolbarController } from "../components/LinkToolbar/LinkToolbarController.js";
 import { SideMenuController } from "../components/SideMenu/SideMenuController.js";
@@ -116,7 +117,7 @@ export function BlockNoteDefaultUI(props: BlockNoteDefaultUIProps) {
   const commentsPortal = resolvePortalTarget(map?.comments);
   const attributionTooltipPortal = resolvePortalTarget(map?.attributionTooltip);
 
-  return (
+  const content = (
     <>
       {editor.getExtension(FormattingToolbarExtension) &&
         props.formattingToolbar !== false && (
@@ -168,5 +169,11 @@ export function BlockNoteDefaultUI(props: BlockNoteDefaultUIProps) {
           />
         )}
     </>
+  );
+
+  return editor.getExtension(CommentsExtension) && props.comments !== false ? (
+    <BlockNoteCommentsController>{content}</BlockNoteCommentsController>
+  ) : (
+    content
   );
 }

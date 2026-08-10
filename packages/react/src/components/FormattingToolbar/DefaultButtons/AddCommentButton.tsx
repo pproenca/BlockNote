@@ -8,20 +8,26 @@ import { useComponentsContext } from "../../../editor/ComponentsContext.js";
 import { useBlockNoteEditor } from "../../../hooks/useBlockNoteEditor.js";
 import { useExtension } from "../../../hooks/useExtension.js";
 import { useDictionary } from "../../../i18n/dictionary.js";
+import { useOptionalBlockNoteCommentsController } from "../../Comments/useBlockNoteCommentsState.js";
 
 export const AddCommentButtonInner = () => {
   const dict = useDictionary();
   const Components = useComponentsContext()!;
 
   const comments = useExtension("comments") as unknown as ReturnType<
-    ReturnType<typeof CommentsExtension>
-  >;
+    typeof CommentsExtension
+  >["~types"]["extension"];
   const { store } = useExtension(FormattingToolbarExtension);
+  const commentsController = useOptionalBlockNoteCommentsController();
 
   const onClick = useCallback(() => {
-    comments.startPendingComment();
+    if (commentsController) {
+      commentsController.openComposer();
+    } else {
+      comments.startPendingComment();
+    }
     store.setState(false);
-  }, [comments, store]);
+  }, [comments, commentsController, store]);
 
   return (
     <Components.FormattingToolbar.Button

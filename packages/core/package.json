@@ -62,6 +62,11 @@
       "import": "./dist/comments.js",
       "require": "./dist/comments.cjs"
     },
+    "./comments/internal": {
+      "types": "./types/src/comments/internal.d.ts",
+      "import": "./dist/comments-internal.js",
+      "require": "./dist/comments-internal.cjs"
+    },
     "./blocks": {
       "types": "./types/src/blocks/index.d.ts",
       "import": "./dist/blocks.js",
@@ -81,6 +86,16 @@
       "types": "./types/src/persistence/index.d.ts",
       "import": "./dist/persistence.js",
       "require": "./dist/persistence.cjs"
+    },
+    "./persistence/internal": {
+      "types": "./types/src/persistence/internal.d.ts",
+      "import": "./dist/persistence-internal.js",
+      "require": "./dist/persistence-internal.cjs"
+    },
+    "./runtime": {
+      "types": "./types/src/runtime/index.d.ts",
+      "import": "./dist/runtime.js",
+      "require": "./dist/runtime.cjs"
     },
     "./yjs": {
       "types": "./types/src/yjs/index.d.ts",

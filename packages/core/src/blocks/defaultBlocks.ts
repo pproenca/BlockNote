@@ -1,9 +1,9 @@
 import { InputRule, markInputRule } from "@tiptap/core";
-import Bold from "@tiptap/extension-bold";
-import Code from "@tiptap/extension-code";
-import Italic from "@tiptap/extension-italic";
-import Strike from "@tiptap/extension-strike";
-import Underline from "@tiptap/extension-underline";
+import { Bold } from "@tiptap/extension-bold";
+import { Code } from "@tiptap/extension-code";
+import { Italic } from "@tiptap/extension-italic";
+import { Strike } from "@tiptap/extension-strike";
+import { Underline } from "@tiptap/extension-underline";
 import { COLORS_DEFAULT } from "../editor/defaultColors.js";
 import {
   BlockNoDefaults,

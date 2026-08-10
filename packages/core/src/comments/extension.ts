@@ -1,17 +1,47 @@
 import { Node } from "prosemirror-model";
 import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
+import { BlockNoteError } from "../platform/BlockNoteError.js";
 import {
   createExtension,
   createStore,
   ExtensionOptions,
 } from "../editor/BlockNoteExtension.js";
+import type { BlockNoteEmptyContext } from "../document/BlockNoteDocumentExtension.js";
 import { ShowSelectionExtension } from "../extensions/ShowSelection/ShowSelection.js";
 import { normalizeToUserStore, UserStoreOrResolver } from "../user/index.js";
 import { CustomBlockNoteSchema } from "../schema/schema.js";
 import { CommentMark } from "./mark.js";
 import type { ThreadStore } from "./threadstore/ThreadStore.js";
 import type { CommentBody } from "./types.js";
+import {
+  createExternalCommentsRuntime,
+  type ExternalCommentsVerifier,
+} from "./external/ExternalCommentsRuntime.js";
+import type { BlockNoteAccessStore } from "../access/BlockNoteAccess.js";
+import type { BlockNoteCommentAnchorCapture } from "./external/BlockNoteCommentAnchorCapture.js";
+
+type CommentsOptions = {
+  threadStore: ThreadStore;
+  resolveUsers: UserStoreOrResolver;
+  schema?: CustomBlockNoteSchema<any, any, any>;
+  confirmBeforeDiscard?: boolean;
+  target?: "document" | "external";
+};
+
+export interface BlockNoteExternalCommentsContext {
+  readonly access: BlockNoteAccessStore;
+  readonly isOnline: () => boolean;
+  readonly capture: (range: {
+    readonly from: number;
+    readonly to: number;
+  }) => BlockNoteCommentAnchorCapture;
+  readonly verifier: ExternalCommentsVerifier;
+}
+
+type CommentsContext =
+  | BlockNoteEmptyContext
+  | { readonly commentsExternal: BlockNoteExternalCommentsContext };
 
 const PLUGIN_KEY = new PluginKey("blocknote-comments");
 
@@ -64,36 +94,10 @@ export const CommentsExtension = createExtension(
       threadStore,
       resolveUsers,
       confirmBeforeDiscard = true,
+      target = "document",
     },
-  }: ExtensionOptions<{
-    /**
-     * The thread store implementation to use for storing and retrieving comment threads
-     */
-    threadStore: ThreadStore;
-    /**
-     * Resolve user information (names, avatars) for comment authors.
-     *
-     * Either a resolver function (called with the ids of users that are not yet
-     * cached, returning their information) or a pre-built user store (see
-     * `createUserStore`). Pass the same store to the collaboration options so a
-     * single de-duped user cache is shared across comments and collaboration.
-     *
-     * See [Comments](https://www.blocknotejs.org/docs/features/collaboration/comments) for more info.
-     */
-    resolveUsers: UserStoreOrResolver;
-    /**
-     * A schema to use for the comment editor (which allows you to customize the blocks and styles that are available in the comment editor)
-     */
-    schema?: CustomBlockNoteSchema<any, any, any>;
-    /**
-     * Whether to ask the user for confirmation before discarding unsaved text
-     * in a comment composer (a new comment, a reply, or an in-progress edit)
-     * when it's dismissed (e.g. by clicking outside or pressing Escape).
-     *
-     * @default true
-     */
-    confirmBeforeDiscard?: boolean;
-  }>) => {
+    context,
+  }: ExtensionOptions<CommentsOptions, CommentsContext>) => {
     if (!resolveUsers) {
       throw new Error(
         "resolveUsers is required to be defined when using comments",
@@ -109,6 +113,13 @@ export const CommentsExtension = createExtension(
     // shared store (see the option docs above).
     const userStore = normalizeToUserStore(resolveUsers);
     const markType = CommentMark.name;
+    const externalContext =
+      "commentsExternal" in context ? context.commentsExternal : undefined;
+    if (target === "external" && !externalContext) {
+      throw new Error(
+        "External comments require the collaboration session context.",
+      );
+    }
 
     const store = createStore(
       {
@@ -128,8 +139,66 @@ export const CommentsExtension = createExtension(
         },
       },
     );
+    const externalRuntime =
+      target === "external" && externalContext
+        ? createExternalCommentsRuntime({
+            threadStore,
+            ...externalContext,
+          })
+        : null;
+    const guardedMutations = new Set([
+      "createThread",
+      "createThreadCommand",
+      "addComment",
+      "updateComment",
+      "deleteComment",
+      "deleteThread",
+      "resolveThread",
+      "unresolveThread",
+      "reopenThread",
+      "addReaction",
+      "deleteReaction",
+    ]);
+    const boundThreadStoreMethods = new Map<PropertyKey, unknown>();
+    const exposedThreadStore = externalContext
+      ? new Proxy(threadStore, {
+          get(targetStore, property) {
+            const value = Reflect.get(targetStore, property, targetStore);
+            if (typeof value !== "function") {
+              return value;
+            }
+            const existing = boundThreadStoreMethods.get(property);
+            if (existing) {
+              return existing;
+            }
+            const bound = (...args: unknown[]) => {
+              if (guardedMutations.has(String(property))) {
+                if (!externalContext.isOnline()) {
+                  throw new BlockNoteError(
+                    "offline-unavailable",
+                    "External comment mutations require an online server.",
+                    { retryable: true },
+                  );
+                }
+                if (!externalContext.access.get().comment) {
+                  throw new BlockNoteError(
+                    "access-denied",
+                    "Comment access is required.",
+                  );
+                }
+              }
+              return Reflect.apply(value, targetStore, args);
+            };
+            boundThreadStoreMethods.set(property, bound);
+            return bound;
+          },
+        })
+      : threadStore;
 
     const updateMarksFromThreads = () => {
+      if (externalRuntime) {
+        return;
+      }
       const snapshot = threadStore.getSnapshot();
       editor.transact((tr) => {
         tr.doc.descendants((node, pos) => {
@@ -196,9 +265,11 @@ export const CommentsExtension = createExtension(
               }
 
               // only update threadPositions if the doc changed
-              const newThreadPositions = tr.docChanged
-                ? getUpdatedThreadPositions(tr.doc, markType)
-                : store.state.threadPositions;
+              const newThreadPositions = externalRuntime
+                ? store.state.threadPositions
+                : tr.docChanged
+                  ? getUpdatedThreadPositions(tr.doc, markType)
+                  : store.state.threadPositions;
 
               if (
                 newThreadPositions.size > 0 ||
@@ -248,6 +319,17 @@ export const CommentsExtension = createExtension(
                 return false;
               }
 
+              if (externalRuntime) {
+                const selected = [...store.state.threadPositions].find(
+                  ([, range]) => range.from <= pos && pos <= range.to,
+                )?.[0];
+                store.setState((previous) => ({
+                  ...previous,
+                  selectedThreadId: selected,
+                }));
+                return selected !== undefined;
+              }
+
               const node = view.state.doc.nodeAt(pos);
 
               if (!node) {
@@ -295,8 +377,33 @@ export const CommentsExtension = createExtension(
           },
         }),
       ],
-      threadStore: threadStore,
+      threadStore: exposedThreadStore,
+      access: externalContext?.access,
+      externalRuntime,
       mount() {
+        if (externalRuntime) {
+          const updateExternalPositions = () => {
+            const threadPositions = new Map<
+              string,
+              { from: number; to: number }
+            >();
+            for (const [threadId, anchor] of externalRuntime.getState()
+              .anchors) {
+              if (anchor.status === "attached") {
+                threadPositions.set(threadId, anchor.range);
+              }
+            }
+            store.setState((previous) => ({ ...previous, threadPositions }));
+            editor.transact((transaction) =>
+              transaction.setMeta(PLUGIN_KEY, true),
+            );
+          };
+          const unsubscribe = externalRuntime.subscribe(
+            updateExternalPositions,
+          );
+          updateExternalPositions();
+          return unsubscribe;
+        }
         const unsubscribe = threadStore.subscribe(updateMarksFromThreads);
         updateMarksFromThreads();
 
@@ -368,22 +475,59 @@ export const CommentsExtension = createExtension(
         initialComment: { body: CommentBody; metadata?: any };
         metadata?: any;
       }) {
-        const thread = await threadStore.createThread(options);
-        if (threadStore.addThreadToDocument) {
-          await threadStore.addThreadToDocument({
-            threadId: thread.id,
-            selection: editor.transact((tr) => tr.selection),
-            editor,
-          });
-        } else {
-          (editor as any)._tiptapEditor.commands.setMark(markType, {
-            orphan: false,
-            threadId: thread.id,
-          });
+        await this.createThreadCommand(options).execute();
+      },
+      createThreadCommand(options: {
+        initialComment: { body: CommentBody; metadata?: any };
+        metadata?: any;
+      }) {
+        if (!externalRuntime) {
+          const command = threadStore.createThreadCommand(options);
+          let attach: Promise<void> | null = null;
+          return {
+            execute: async (executeOptions?: {
+              readonly signal?: AbortSignal;
+            }) => {
+              const thread = await command.execute(executeOptions);
+              attach ??= threadStore.addThreadToDocument
+                ? threadStore.addThreadToDocument({
+                    threadId: thread.id,
+                    selection: editor.transact((tr) => tr.selection),
+                    editor,
+                  })
+                : Promise.resolve().then(() => {
+                    (editor as any)._tiptapEditor.commands.setMark(markType, {
+                      orphan: false,
+                      threadId: thread.id,
+                    });
+                  });
+              await attach;
+              return thread;
+            },
+          };
         }
+        const selection = editor.transact(
+          (transaction) => transaction.selection,
+        );
+        const from = Math.min(selection.anchor, selection.head);
+        const to = Math.max(selection.anchor, selection.head);
+        if (from >= to) {
+          throw new BlockNoteError(
+            "invalid-anchor",
+            "External comments require a non-empty selection.",
+          );
+        }
+        return externalRuntime.createThreadCommand({
+          ...options,
+          capture: externalRuntime.capture({ from, to }),
+        });
+      },
+      destroy() {
+        void externalRuntime?.destroy();
       },
       commentEditorSchema,
       confirmBeforeDiscard,
     } as const;
   },
+  { name: "comments", version: "2" },
 );

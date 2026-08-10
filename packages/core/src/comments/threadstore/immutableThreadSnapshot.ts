@@ -1,4 +1,5 @@
 import { BlockNoteError } from "../../platform/BlockNoteError.js";
+import { blockNoteCommentAnchor } from "../external/BlockNoteCommentAnchor.js";
 import type {
   BlockNoteComment,
   BlockNoteCommentReaction,
@@ -132,6 +133,7 @@ export function cloneThread<TThreadMetadata, TCommentMetadata>(
   let resolvedBy: unknown;
   let deletedAt: unknown;
   let detached: unknown;
+  let anchor: unknown;
   try {
     type = value.type;
     id = value.id;
@@ -144,6 +146,7 @@ export function cloneThread<TThreadMetadata, TCommentMetadata>(
     resolvedBy = value.resolvedBy;
     deletedAt = value.deletedAt;
     detached = value.detached;
+    anchor = value.anchor;
   } catch (error) {
     throw invalidSnapshot("Thread row is not readable.", error);
   }
@@ -162,6 +165,15 @@ export function cloneThread<TThreadMetadata, TCommentMetadata>(
     (detached !== undefined && typeof detached !== "boolean")
   ) {
     throw invalidSnapshot("Thread row has invalid fields.");
+  }
+  if (anchor !== undefined) {
+    try {
+      blockNoteCommentAnchor.serialize(
+        anchor as Parameters<typeof blockNoteCommentAnchor.serialize>[0],
+      );
+    } catch (error) {
+      throw invalidSnapshot("Thread anchor is invalid.", error);
+    }
   }
 
   try {
@@ -185,6 +197,13 @@ export function cloneThread<TThreadMetadata, TCommentMetadata>(
         ? {}
         : { deletedAt: immutableSnapshotDate(deletedAt) }),
       ...(detached === undefined ? {} : { detached }),
+      ...(anchor === undefined
+        ? {}
+        : {
+            anchor: anchor as Parameters<
+              typeof blockNoteCommentAnchor.serialize
+            >[0],
+          }),
     });
   } catch (error) {
     if (error instanceof BlockNoteError) {

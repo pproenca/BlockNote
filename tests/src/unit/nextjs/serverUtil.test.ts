@@ -2,10 +2,12 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 
 import { getPort } from "get-port-please";
+import { chromium } from "@playwright/test";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
   buildAndPackPackages,
+  assertExactPackedArtifactSet,
   packedPackageCases,
   prepareNextConsumer,
   removeNextConsumer,
@@ -75,6 +77,24 @@ describe("built BlockNote package contracts", () => {
       expectedImports.map((entry) => ({ ...entry, isBuiltOutput: true })),
     );
   }, 180_000);
+
+  it("rejects missing and mixed artifact sets before installation", () => {
+    const artifacts = getPackedArtifacts();
+    expect(() =>
+      assertExactPackedArtifactSet({
+        ...artifacts,
+        artifacts: artifacts.artifacts.slice(1),
+      }),
+    ).toThrow("exactly one packed artifact");
+    expect(() =>
+      assertExactPackedArtifactSet({
+        ...artifacts,
+        artifacts: artifacts.artifacts.map((artifact, index) =>
+          index === 0 ? { ...artifact, version: "0.0.0-mixed" } : artifact,
+        ),
+      }),
+    ).toThrow("versions must match");
+  });
 });
 
 describe(`server-util in a fresh Next.js App Router consumer (#942) [${mode}]`, () => {
@@ -273,5 +293,26 @@ describe(`server-util in a fresh Next.js App Router consumer (#942) [${mode}]`, 
     ).toBe(200);
     expect(html).toContain("BlockNote Editor Test");
     expect(html).toContain("editor-wrapper");
+  }, 30_000);
+
+  it("runs comment-only save and live access revocation in Chromium", async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/editor`);
+      await page.getByTestId("comment-save").click();
+      await expect
+        .poll(() => page.getByTestId("comment-result").textContent())
+        .toBe("saved-no-change");
+      await page.getByTestId("revoke-edit").click();
+      await expect
+        .poll(() => page.getByTestId("edit-access").textContent())
+        .toBe("false");
+      await expect
+        .poll(() => page.locator(".bn-editor").getAttribute("contenteditable"))
+        .toBe("false");
+    } finally {
+      await browser.close();
+    }
   }, 30_000);
 });

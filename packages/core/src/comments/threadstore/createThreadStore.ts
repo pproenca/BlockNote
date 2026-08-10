@@ -1,4 +1,5 @@
 import type { BlockNoteThreadSnapshot, ThreadData } from "../types.js";
+import { createBlockNoteCreateThreadCommand } from "../external/BlockNoteCreateThreadCommand.js";
 import { ThreadStore } from "./ThreadStore.js";
 import { CallbackThreadStoreAuth } from "./CallbackThreadStoreAuth.js";
 import { CommittedThreadStoreState } from "./committedThreadStoreState.js";
@@ -65,19 +66,29 @@ class CallbackThreadStore<
   createThread(
     options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
   ) {
-    return this.runMutation(async ({ idempotencyKey, startRevision }) => {
-      const receipt = await this.callbacks.createThread({
-        ...options,
-        idempotencyKey,
-      });
-      const normalized = assertCreateThreadReceipt(receipt);
-      assertThreadStoreCommitIsFresh(
-        normalized.receipt.revision,
-        startRevision,
-      );
-      this.notifyTransition(this.state.applyCommit(normalized.receipt));
-      return normalized.result;
-    });
+    return this.createThreadCommand(options).execute();
+  }
+
+  override createThreadCommand(
+    options: CreateThreadOptions<TThreadMetadata, TCommentMetadata>,
+  ) {
+    const idempotencyKey = `${this.idempotencyPrefix}:${++this.nextIdempotencySequence}`;
+    return createBlockNoteCreateThreadCommand((signal) =>
+      this.runMutation(async ({ startRevision }) => {
+        const receipt = await this.callbacks.createThread({
+          ...options,
+          idempotencyKey,
+          signal,
+        });
+        const normalized = assertCreateThreadReceipt(receipt);
+        assertThreadStoreCommitIsFresh(
+          normalized.receipt.revision,
+          startRevision,
+        );
+        this.notifyTransition(this.state.applyCommit(normalized.receipt));
+        return normalized.result;
+      }, idempotencyKey),
+    );
   }
 
   addComment(options: AddCommentOptions<TCommentMetadata>) {
@@ -293,10 +304,13 @@ class CallbackThreadStore<
         TCommentMetadata
       >["revision"];
     }) => Promise<TResult>,
+    fixedIdempotencyKey?: string,
   ) {
     const run = this.mutationQueue.then(() => {
       const startRevision = this.state.getSnapshot().revision;
-      const idempotencyKey = `${this.idempotencyPrefix}:${++this.nextIdempotencySequence}`;
+      const idempotencyKey =
+        fixedIdempotencyKey ??
+        `${this.idempotencyPrefix}:${++this.nextIdempotencySequence}`;
       return operation({ idempotencyKey, startRevision });
     });
     this.mutationQueue = run.then(

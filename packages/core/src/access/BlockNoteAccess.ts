@@ -41,6 +41,9 @@ export function createBlockNoteAccess(
   });
 
   return {
+    get state() {
+      return store.state;
+    },
     get() {
       return store.get();
     },

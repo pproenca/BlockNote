@@ -34,6 +34,10 @@ export default defineConfig({
       entry: {
         blocknote: path.resolve(__dirname, "src/index.ts"),
         comments: path.resolve(__dirname, "src/comments/index.ts"),
+        "comments-internal": path.resolve(
+          __dirname,
+          "src/comments/internal.ts",
+        ),
         "detect-markdown": path.resolve(
           __dirname,
           "src/api/parsers/markdown/detectMarkdown.ts",
@@ -42,6 +46,11 @@ export default defineConfig({
         locales: path.resolve(__dirname, "src/i18n/index.ts"),
         extensions: path.resolve(__dirname, "src/extensions/index.ts"),
         persistence: path.resolve(__dirname, "src/persistence/index.ts"),
+        "persistence-internal": path.resolve(
+          __dirname,
+          "src/persistence/internal.ts",
+        ),
+        runtime: path.resolve(__dirname, "src/runtime/index.ts"),
         yjs: path.resolve(__dirname, "src/yjs/index.ts"),
         y: path.resolve(__dirname, "src/y/index.ts"),
       },
@@ -59,7 +68,10 @@ export default defineConfig({
         // published BlockNote packages never depend on a consumer-side patch.
         if (
           source === "@y/prosemirror" ||
-          source.startsWith("@y/prosemirror/")
+          source.startsWith("@y/prosemirror/") ||
+          source === "@handlewithcare/prosemirror-inputrules" ||
+          source.startsWith("@handlewithcare/prosemirror-inputrules/") ||
+          source === "prosemirror-history"
         ) {
           return false;
         }

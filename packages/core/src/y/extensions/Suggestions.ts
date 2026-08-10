@@ -1,4 +1,9 @@
-import { configureYProsemirror, ySyncPluginKey } from "@y/prosemirror";
+import {
+  configureYProsemirror,
+  preflightYSyncTransaction,
+  registerYSyncMutationPolicy,
+  ySyncPluginKey,
+} from "@y/prosemirror";
 import { Plugin, TextSelection } from "prosemirror-state";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
@@ -25,6 +30,10 @@ import {
   type NativeSuggestionRecord,
   type NativeSuggestionsBinding,
 } from "./suggestions/native.js";
+import {
+  appendCapturedSuggestionClaims,
+  assertCanTrackSuggestionEdit,
+} from "./suggestions/ledger.js";
 
 export type BlockNoteSuggestionKind = "insertion" | "deletion" | "replacement";
 
@@ -95,13 +104,14 @@ const createSuggestionsExtension = ({
   });
   let binding: NativeSuggestionsBinding | undefined;
   let stopObserving: (() => void) | undefined;
+  let stopMutationPolicy: (() => void) | undefined;
   let active = new Map<string, NativeSuggestionRecord>();
   let latestDoc: ProseMirrorNode | undefined;
   let refreshing = false;
   let refreshRequested = false;
 
-  const refreshOnce = (doc = latestDoc) => {
-    if (!binding || !doc) {
+  const refreshOnce = () => {
+    if (!binding) {
       active = new Map();
       store.set([]);
       return;
@@ -143,8 +153,25 @@ const createSuggestionsExtension = ({
       return next;
     }
     stopObserving?.();
+    stopMutationPolicy?.();
     binding = next;
     stopObserving = observeNativeSuggestions(binding, () => refresh());
+    const suggestionType = findTypeInOtherYdoc(
+      binding.fragment,
+      binding.suggestionDoc,
+    );
+    stopMutationPolicy = registerYSyncMutationPolicy(suggestionType, {
+      beforeMutation: ({ rangeCountUpperBound }) => {
+        if (binding?.renderer.suggestionMode) {
+          assertCanTrackSuggestionEdit(binding, rangeCountUpperBound);
+        }
+      },
+      afterMutation: (content) => {
+        if (binding?.renderer.suggestionMode) {
+          appendCapturedSuggestionClaims(binding, content);
+        }
+      },
+    });
     return binding;
   };
 
@@ -160,7 +187,7 @@ const createSuggestionsExtension = ({
     if (!binding || !suggestion) {
       return;
     }
-    resolveNativeSuggestions(binding, [id], status);
+    await resolveNativeSuggestions(binding, [id], status);
     refresh();
   };
 
@@ -177,16 +204,47 @@ const createSuggestionsExtension = ({
     if (ids.length === 0) {
       return;
     }
-    resolveNativeSuggestions(binding, ids, status);
+    await resolveNativeSuggestions(binding, ids, status);
     refresh();
   };
 
-  return {
+  const extension = {
     key: "suggestions",
     store,
     runsBefore: ["ySync"],
     prosemirrorPlugins: [
       new Plugin({
+        filterTransaction(transaction, state) {
+          if (
+            !transaction.docChanged ||
+            transaction.getMeta("y-sync-transaction") ||
+            transaction.getMeta("y-sync-append") ||
+            transaction.getMeta(ySyncPluginKey)
+          ) {
+            return true;
+          }
+          const runtime = ensureBinding();
+          const sync = ySyncPluginKey.getState(state);
+          const suggestionType = runtime
+            ? findTypeInOtherYdoc(runtime.fragment, runtime.suggestionDoc)
+            : null;
+          if (
+            runtime?.renderer.suggestionMode &&
+            suggestionType !== null &&
+            sync?.ytype === suggestionType &&
+            sync.renderer === runtime.renderer &&
+            runtime.suggestionDoc._transaction === null &&
+            runtime.suggestionDoc._transactionCleanups.length === 0
+          ) {
+            preflightYSyncTransaction(
+              transaction,
+              suggestionType,
+              ySyncPluginKey.get(state),
+              runtime.renderer,
+            );
+          }
+          return true;
+        },
         view(view) {
           latestDoc = view.state.doc;
           ensureBinding();
@@ -203,39 +261,51 @@ const createSuggestionsExtension = ({
     ],
     destroy() {
       stopObserving?.();
+      stopMutationPolicy?.();
     },
     select(id: string | null) {
       if (id === null) {
         return;
       }
       const suggestion = currentSuggestion(id);
-      const suggestionType = binding
-        ? findTypeInOtherYdoc(binding.fragment, binding.suggestionDoc)
-        : null;
       const sync = ySyncPluginKey.getState(editor.prosemirrorState);
-      if (
-        !binding ||
-        sync?.ytype !== suggestionType ||
-        sync.renderer !== binding.renderer
-      ) {
+      if (!binding || !sync) {
+        return;
+      }
+      const suggestionType = findTypeInOtherYdoc(
+        binding.fragment,
+        binding.suggestionDoc,
+      );
+      const projection =
+        sync.ytype === suggestionType && sync.renderer === binding.renderer
+          ? { documentType: suggestionType, renderer: binding.renderer }
+          : sync.ytype === binding.fragment
+            ? { documentType: binding.fragment, renderer: null }
+            : null;
+      if (!projection) {
         return;
       }
       const ranges = suggestion
-        ? findSuggestionRanges(editor.prosemirrorState.doc, binding, suggestion)
+        ? findSuggestionRanges(
+            editor.prosemirrorState.doc,
+            binding,
+            suggestion,
+            projection,
+          )
         : [];
-      const first = ranges[0];
-      const last = ranges.at(-1);
-      if (!first || !last) {
+      const selected =
+        ranges.find((range) => range.to > range.from) ?? ranges[0];
+      if (!selected) {
         return;
       }
       editor.transact((transaction) => {
         const from = Math.max(
           0,
-          Math.min(first.from, transaction.doc.content.size),
+          Math.min(selected.from, transaction.doc.content.size),
         );
         const to = Math.max(
           from,
-          Math.min(last.to, transaction.doc.content.size),
+          Math.min(selected.to, transaction.doc.content.size),
         );
         transaction.setSelection(
           TextSelection.create(transaction.doc, from, to),
@@ -260,6 +330,8 @@ const createSuggestionsExtension = ({
         return false;
       }
       runtime.renderer.suggestionMode = false;
+      const origin = ySyncPluginKey.get(editor.prosemirrorState);
+      runtime.renderer.suggestionOrigins = origin ? [origin] : [];
       return editor.exec(
         configureYProsemirror({
           ytype: findTypeInOtherYdoc(runtime.fragment, runtime.suggestionDoc),
@@ -273,6 +345,8 @@ const createSuggestionsExtension = ({
         return false;
       }
       runtime.renderer.suggestionMode = true;
+      const origin = ySyncPluginKey.get(editor.prosemirrorState);
+      runtime.renderer.suggestionOrigins = origin ? [origin] : [];
       return editor.exec(
         configureYProsemirror({
           ytype: findTypeInOtherYdoc(runtime.fragment, runtime.suggestionDoc),
@@ -290,6 +364,9 @@ const createSuggestionsExtension = ({
       );
     },
   } as const;
+  ensureBinding();
+  refresh();
+  return extension;
 };
 
 const SuggestionsExtensionImplementation = createExtension(

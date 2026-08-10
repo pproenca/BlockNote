@@ -19,7 +19,7 @@
   "scripts": {
     "dev": "vp run --filter @blocknote/example-editor dev",
     "dev:docs": "vp run --filter docs dev",
-    "build": "vp run -r build",
+    "build": "pnpm --pm-on-fail=ignore --filter @pproenca/y build && pnpm --pm-on-fail=ignore -r --filter !@pproenca/y --if-present run build",
     "build:clean": "vp run clean && vp run gen && vp run clean && vp run build",
     "build:site": "vp run -r build:site",
     "check": "vp run check --fix",
@@ -36,7 +36,7 @@
     "prebuild": "cp README.md packages/core/README.md && cp README.md packages/react/README.md",
     "prestart": "vp run build",
     "start": "vp run --filter @blocknote/example-editor preview",
-    "test": "vp run --filter \"@blocknote/*\" --filter \"docs\" test",
+    "test": "pnpm --pm-on-fail=ignore -r --filter \"@blocknote/*\" --filter \"docs\" --if-present run test",
     "format": "vp fmt",
     "prepare": "vp config"
   },

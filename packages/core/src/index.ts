@@ -10,6 +10,7 @@ export * from "./pm-nodes/suggestionMarks.js";
 export * from "./api/nodeUtil.js";
 export * from "./api/pmUtil.js";
 export * from "./access/BlockNoteAccess.js";
+export * from "./collaboration/index.js";
 export * from "./blocks/index.js";
 export { CommentsExtension } from "./comments/extension.js";
 export {
@@ -24,6 +25,9 @@ export type {
   BlockNoteThread,
   BlockNoteThreadSnapshot,
 } from "./comments/types.js";
+export * from "./comments/external/BlockNoteCommentAnchor.js";
+export * from "./comments/external/BlockNoteCommentAnchorCapture.js";
+export * from "./comments/external/BlockNoteCommentAnchorVerificationBundle.js";
 export * from "./document/BlockNoteDocument.js";
 export * from "./document/BlockNoteDocumentExtension.js";
 export * from "./editor/BlockNoteEditor.js";
@@ -37,6 +41,9 @@ export * from "./i18n/dictionary.js";
 export * from "./platform/BlockNoteError.js";
 export * from "./platform/BlockNoteStore.js";
 export * from "./persistence/BlockNotePersistence.js";
+export * from "./persistence/BlockNoteDocumentBinding.js";
+export * from "./persistence/BlockNoteDocumentStore.js";
+export * from "./runtime/BlockNoteCommentAnchorRuntime.js";
 export * from "./schema/index.js";
 export * from "./user/index.js";
 export * from "./util/browser.js";

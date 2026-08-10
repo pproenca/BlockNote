@@ -75,6 +75,7 @@ export * from "./components/SuggestionMenu/hooks/useCloseSuggestionMenuNoItems.j
 export * from "./components/SuggestionMenu/hooks/useLoadSuggestionMenuItems.js";
 export * from "./components/SuggestionMenu/hooks/useSuggestionMenuKeyboardNavigation.js";
 export * from "./components/SuggestionMenu/types.js";
+export * from "./components/Suggestions/BlockNoteSuggestionsController.js";
 
 export * from "./components/SuggestionMenu/GridSuggestionMenu/GridSuggestionMenuController.js";
 export * from "./components/SuggestionMenu/GridSuggestionMenu/GridSuggestionMenuWrapper.js";
@@ -109,6 +110,8 @@ export * from "./components/TableHandles/TableHandleMenu/TableHandleMenuProps.js
 
 // TODO: Revise comments exports/packaging
 export * from "./components/Comments/Comment.js";
+export * from "./components/Comments/BlockNoteCommentsController.js";
+export * from "./components/Comments/useBlockNoteCommentsState.js";
 export * from "./components/Comments/Comments.js";
 export * from "./components/Comments/FloatingComposer.js";
 export { default as FloatingComposerController } from "./components/Comments/FloatingComposerController.js";
@@ -135,6 +138,11 @@ export * from "./hooks/useSelectedBlocks.js";
 export * from "./hooks/useUploadLoading.js";
 export * from "./hooks/useExtension.js";
 export * from "./hooks/useEditorState.js";
+export * from "./hooks/useCreateBlockNoteSession.js";
+export * from "./hooks/useBlockNoteSessionState.js";
+export * from "./session/BlockNoteSessionContext.js";
+export * from "./session/BlockNoteSessionProvider.js";
+export * from "./session/useBlockNoteSession.js";
 
 export * from "./schema/ReactBlockSpec.js";
 export * from "./schema/ReactInlineContentSpec.js";

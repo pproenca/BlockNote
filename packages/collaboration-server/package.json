@@ -32,6 +32,11 @@
       "types": "./types/src/index.d.ts",
       "import": "./dist/blocknote-collaboration-server.js",
       "require": "./dist/blocknote-collaboration-server.cjs"
+    },
+    "./internal": {
+      "types": "./types/src/runtime/internal.d.ts",
+      "import": "./dist/internal.js",
+      "require": "./dist/internal.cjs"
     }
   },
   "scripts": {
@@ -44,13 +49,15 @@
     "typecheck": "tsgo --noEmit",
     "clean": "rimraf dist && rimraf types"
   },
-  "devDependencies": {
+  "dependencies": {
     "@blocknote/core": "workspace:^",
+    "@hocuspocus/common": "catalog:collaboration",
+    "@y/protocols": "^1.0.6-rc.1",
+    "@y/y": "14.0.0-rc.23"
+  },
+  "devDependencies": {
     "rimraf": "^5.0.10",
     "typescript": "^5.9.3",
     "vite-plus": "catalog:"
-  },
-  "peerDependencies": {
-    "@blocknote/core": "^0.52.1"
   }
 }

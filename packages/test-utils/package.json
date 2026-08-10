@@ -47,6 +47,8 @@
     "@blocknote/collaboration": "workspace:^",
     "@blocknote/collaboration-server": "workspace:^",
     "@blocknote/core": "workspace:^",
+    "@blocknote/react": "workspace:^",
+    "@blocknote/server-util": "workspace:^",
     "rimraf": "^5.0.10",
     "typescript": "^5.9.3",
     "vite-plus": "catalog:"
@@ -54,6 +56,8 @@
   "peerDependencies": {
     "@blocknote/collaboration": "^0.52.1",
     "@blocknote/collaboration-server": "^0.52.1",
-    "@blocknote/core": "^0.52.1"
+    "@blocknote/core": "^0.52.1",
+    "@blocknote/react": "^0.52.1",
+    "@blocknote/server-util": "^0.52.1"
   }
 }

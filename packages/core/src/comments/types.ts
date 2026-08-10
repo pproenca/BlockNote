@@ -3,6 +3,20 @@
  */
 export type CommentBody = any;
 
+import type { BlockNoteCommentAnchor } from "./external/BlockNoteCommentAnchor.js";
+import type { BlockNoteCommentAnchorCapture } from "./external/BlockNoteCommentAnchorCapture.js";
+
+export type BlockNoteCommentTarget =
+  | { readonly kind: "document" }
+  | {
+      readonly kind: "external";
+      readonly capture: BlockNoteCommentAnchorCapture;
+    };
+
+export interface BlockNoteCreateThreadCommand<TThread> {
+  execute(options?: { readonly signal?: AbortSignal }): Promise<TThread>;
+}
+
 /**
  * A reaction to a comment.
  */
@@ -122,6 +136,8 @@ export type ThreadData<TThreadMetadata = any, TCommentMetadata = any> = {
    * Whether the thread's anchor can no longer be mapped to the document.
    */
   detached?: boolean;
+  /** Server-sealed anchor for an externally anchored thread. */
+  anchor?: BlockNoteCommentAnchor;
 };
 
 /**
@@ -168,6 +184,7 @@ export type BlockNoteThread<TThreadMetadata = any, TCommentMetadata = any> = {
   readonly metadata: TThreadMetadata;
   readonly deletedAt?: Date;
   readonly detached?: boolean;
+  readonly anchor?: BlockNoteCommentAnchor;
 };
 
 /**

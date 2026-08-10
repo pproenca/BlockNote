@@ -33,6 +33,14 @@ export default defineConfig(
                 // load live from sources with live reload working
                 "@blocknote/core": path.resolve(__dirname, "../core/src/"),
                 "@blocknote/react": path.resolve(__dirname, "../react/src/"),
+                "@blocknote/collaboration-server/internal": path.resolve(
+                  __dirname,
+                  "../collaboration-server/src/runtime/internal.ts",
+                ),
+                "@blocknote/collaboration-server": path.resolve(
+                  __dirname,
+                  "../collaboration-server/src/",
+                ),
               } as Record<string, string>),
       },
       build: {
@@ -41,6 +49,11 @@ export default defineConfig(
           entry: {
             "blocknote-server-util": path.resolve(__dirname, "src/index.ts"),
             headless: path.resolve(__dirname, "src/headless/index.ts"),
+            collaboration: path.resolve(
+              __dirname,
+              "src/collaboration/index.ts",
+            ),
+            node: path.resolve(__dirname, "src/node/index.ts"),
           },
           name: "blocknote-server-util",
           formats: ["es", "cjs"],

@@ -1,4 +1,5 @@
 export interface BlockNoteStore<TValue> {
+  readonly state: TValue;
   get(): TValue;
   subscribe(listener: (value: TValue) => void): () => void;
 }
@@ -18,6 +19,9 @@ export function createBlockNoteStore<TValue>(
   let value = initialValue;
 
   return {
+    get state() {
+      return value;
+    },
     get() {
       return value;
     },

@@ -5,11 +5,12 @@ import { BlockNoteEditor } from "../../../editor/BlockNoteEditor.js";
 import { SuggestionsExtension } from "../Suggestions.js";
 import { withCollaboration } from "../index.js";
 import { findSuggestionRanges } from "./analysis.js";
-import {
-  getNativeSuggestionRecords,
-  getNativeSuggestionsBinding,
-} from "./native.js";
+import * as nativeSuggestions from "./native.js";
 import { LEDGER_NAMES, rangeClaimId, rangesFromIdSet } from "./model.js";
+import {
+  issueNativeReviewAuthorityForTest,
+  revokeNativeReviewAuthorityForTest,
+} from "./authority.js";
 
 export type Editor = BlockNoteEditor<any, any, any>;
 
@@ -31,6 +32,7 @@ export function createEditor(
     suggestionDoc?: Y.Doc;
     renderer?: Y.DiffRenderer;
     actorId?: string;
+    executeReviews?: boolean;
   } = {},
 ) {
   const editor = BlockNoteEditor.create(
@@ -49,12 +51,21 @@ export function createEditor(
   );
   editor.mount(document.createElement("div"));
   editors.push(editor);
+  const binding = nativeSuggestions.getNativeSuggestionsBinding(editor);
+  if (binding && options.executeReviews !== false) {
+    binding.submitReview = () =>
+      nativeSuggestions.executeNativeSuggestionReviews(
+        binding,
+        issueNativeReviewAuthorityForTest(),
+      );
+  }
   return editor;
 }
 
 export function createFixture(
   initial: string,
   actorId: string | undefined = "alice",
+  options: { executeReviews?: boolean } = {},
 ) {
   const baseDoc = new Y.Doc();
   const suggestionDoc = new Y.Doc({ isSuggestionDoc: true });
@@ -68,6 +79,7 @@ export function createFixture(
     suggestionDoc,
     renderer,
     actorId,
+    executeReviews: options.executeReviews,
   });
   setText(editor, initial);
   Y.applyUpdate(suggestionDoc, Y.encodeStateAsUpdate(baseDoc));
@@ -161,12 +173,42 @@ export function selectedText(editor: Editor) {
 }
 
 export function hasSuggestionMark(editor: Editor, id: string) {
-  const binding = getNativeSuggestionsBinding(editor);
-  const record = binding ? getNativeSuggestionRecords(binding).get(id) : null;
+  const binding = nativeSuggestions.getNativeSuggestionsBinding(editor);
+  const record = binding
+    ? nativeSuggestions.getNativeSuggestionRecords(binding).get(id)
+    : null;
   return binding && record
     ? findSuggestionRanges(editor.prosemirrorState.doc, binding, record)
         .length > 0
     : false;
+}
+
+export function mintNativeReviewPermitForTest() {
+  return issueNativeReviewAuthorityForTest();
+}
+
+export function revokeNativeReviewPermitForTest(permit: object) {
+  revokeNativeReviewAuthorityForTest(permit);
+}
+
+export function executeNativeReviewsForTest(editor: Editor, permit: unknown) {
+  const execute = (
+    nativeSuggestions as unknown as {
+      executeNativeSuggestionReviews?: (
+        binding: NonNullable<
+          ReturnType<typeof nativeSuggestions.getNativeSuggestionsBinding>
+        >,
+        permit: unknown,
+      ) => void;
+    }
+  ).executeNativeSuggestionReviews;
+  if (!execute) {
+    throw new Error("Native suggestion review authority capability is missing");
+  }
+  return execute(
+    nativeSuggestions.getNativeSuggestionsBinding(editor)!,
+    permit,
+  );
 }
 
 export function createInsertionLedgerUpdate(

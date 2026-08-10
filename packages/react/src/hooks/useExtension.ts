@@ -37,7 +37,12 @@ export function useExtension<
   return instance;
 }
 
-type ExtractStore<T> = T extends Store<infer U> ? U : never;
+type ExtractStore<T> =
+  T extends Store<infer U>
+    ? U
+    : T extends { readonly state: infer U }
+      ? U
+      : never;
 
 /**
  * Use the state of an extension

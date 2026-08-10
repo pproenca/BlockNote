@@ -3,6 +3,7 @@ import type {
   BlockNoteThreadStoreCommitReceipt,
   BlockNoteThreadStoreMutationReceipt,
   BlockNoteThreadStoreRevision,
+  BlockNoteCommentTarget,
   CommentBody,
   CommentData,
   ThreadData,
@@ -10,11 +11,12 @@ import type {
 import type { ThreadStoreAuth } from "./ThreadStoreAuth.js";
 
 export type CreateThreadOptions<TThreadMetadata, TCommentMetadata> = {
-  initialComment: {
-    body: CommentBody;
-    metadata?: TCommentMetadata;
+  readonly initialComment: {
+    readonly body: CommentBody;
+    readonly metadata?: TCommentMetadata;
   };
-  metadata?: TThreadMetadata;
+  readonly metadata?: TThreadMetadata;
+  readonly target?: BlockNoteCommentTarget;
 };
 
 export type AddCommentOptions<TCommentMetadata> = {
@@ -54,6 +56,7 @@ type Idempotent<TOptions> = TOptions & {
    * public ThreadStore operation again starts a new operation with a new key.
    */
   readonly idempotencyKey: string;
+  readonly signal?: AbortSignal;
 };
 
 type MutationReceipt<

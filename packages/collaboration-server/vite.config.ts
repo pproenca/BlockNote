@@ -29,6 +29,7 @@ export default defineConfig({
           __dirname,
           "src/index.ts",
         ),
+        internal: path.resolve(__dirname, "src/runtime/internal.ts"),
       },
       name: "blocknote-collaboration-server",
       formats: ["es", "cjs"],

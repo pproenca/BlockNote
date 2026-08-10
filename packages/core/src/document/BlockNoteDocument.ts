@@ -14,7 +14,10 @@ import {
   assertBlockNoteIdentifier,
   validateBlockNoteDocumentExtensions,
 } from "./validateBlockNoteDocumentExtensions.js";
-import { registerBlockNoteDocumentInternals } from "./BlockNoteDocumentInternals.js";
+import {
+  getBlockNoteExtensionHeadlessProjection,
+  registerBlockNoteDocumentInternals,
+} from "./BlockNoteDocumentInternals.js";
 
 export interface BlockNoteDocumentLimits {
   readonly documentBytes?: number;
@@ -222,6 +225,12 @@ export function defineBlockNoteDocument<
         extension.version,
       ]),
     ]),
+    headlessProjectionContributions: document.extensions.flatMap(
+      (extension) => {
+        const contribution = getBlockNoteExtensionHeadlessProjection(extension);
+        return contribution ? [contribution] : [];
+      },
+    ),
   });
 
   return document;

@@ -93,6 +93,19 @@ export const packedPackageCases = [
         specifier: "@blocknote/react",
         exportName: "createReactBlockSpec",
       },
+      { specifier: "@blocknote/react", exportName: "BlockNoteViewRaw" },
+      {
+        specifier: "@blocknote/react",
+        exportName: "useCreateBlockNoteSession",
+      },
+      {
+        specifier: "@blocknote/react",
+        exportName: "BlockNoteSessionProvider",
+      },
+      {
+        specifier: "@blocknote/react",
+        exportName: "createBlockNoteCommentsController",
+      },
     ],
   },
   {
@@ -103,15 +116,61 @@ export const packedPackageCases = [
         specifier: "@blocknote/server-util",
         exportName: "ServerBlockNoteEditor",
       },
+      {
+        specifier: "@blocknote/server-util/headless",
+        exportName: "createBlockNoteDocumentService",
+      },
+      {
+        specifier: "@blocknote/server-util/collaboration",
+        exportName: "createBlockNoteCollaboration",
+      },
+      {
+        specifier: "@blocknote/server-util/node",
+        exportName: "serveBlockNoteCollaboration",
+      },
     ],
   },
-] as const satisfies readonly PackedPackageCase[];
-
-const nextOnlyPackageCases = [
   {
-    packageName: "@blocknote/mantine",
-    workspaceDirectory: "mantine",
-    publicImports: [],
+    packageName: "@blocknote/collaboration",
+    workspaceDirectory: "collaboration",
+    publicImports: [
+      {
+        specifier: "@blocknote/collaboration",
+        exportName: "createBlockNoteSession",
+      },
+    ],
+  },
+  {
+    packageName: "@blocknote/collaboration-server",
+    workspaceDirectory: "collaboration-server",
+    publicImports: [
+      {
+        specifier: "@blocknote/collaboration-server",
+        exportName: "createBlockNoteCollaboration",
+      },
+      {
+        specifier: "@blocknote/collaboration-server",
+        exportName: "createInMemoryDocumentStore",
+      },
+    ],
+  },
+  {
+    packageName: "@blocknote/test-utils",
+    workspaceDirectory: "test-utils",
+    publicImports: [
+      {
+        specifier: "@blocknote/test-utils",
+        exportName: "defineBlockNoteDocumentStoreContract",
+      },
+      {
+        specifier: "@blocknote/test-utils",
+        exportName: "defineBlockNoteCommentsBehaviorFixtures",
+      },
+      {
+        specifier: "@blocknote/test-utils",
+        exportName: "createBlockNoteCommentAnchorTestKeyRings",
+      },
+    ],
   },
 ] as const satisfies readonly PackedPackageCase[];
 
@@ -138,6 +197,8 @@ const repoRoot = path.resolve(__dirname, "../../../..");
 const packageRoot = path.join(repoRoot, "packages");
 const vpBinary = path.join(repoRoot, "node_modules", ".bin", "vp");
 const tscBinary = path.join(repoRoot, "node_modules", ".bin", "tsc");
+const tsgoBinary = path.join(repoRoot, "node_modules", ".bin", "tsgo");
+const pnpmCli = process.env.BLOCKNOTE_TEST_PNPM_CLI ?? process.env.npm_execpath;
 
 const commandOptions = (
   cwd: string,
@@ -168,6 +229,14 @@ const run = (
       { cause: error },
     );
   }
+};
+
+const runPnpm = (args: readonly string[], cwd: string) => {
+  const stableArgs = ["--pm-on-fail=ignore", ...args];
+  if (pnpmCli?.endsWith(".cjs") || pnpmCli?.endsWith(".js")) {
+    return run(process.execPath, [pnpmCli, ...stableArgs], cwd);
+  }
+  return run(pnpmCli || "pnpm", stableArgs, cwd);
 };
 
 const readPackageVersion = (packageCase: PackedPackageCase) => {
@@ -204,24 +273,28 @@ export const buildAndPackPackages = (): PackedArtifactSet => {
     throw new Error(`Missing Vite Plus binary at ${vpBinary}`);
   }
 
-  const allPackageCases = [...packedPackageCases, ...nextOnlyPackageCases];
+  const allPackageCases = packedPackageCases;
   const directory = mkdtempSync(path.join(tmpdir(), "blocknote-packages-"));
 
   try {
-    run(
-      vpBinary,
-      [
-        "run",
-        "--no-cache",
-        ...allPackageCases.flatMap(({ packageName }) => [
-          "--filter",
-          packageName,
-        ]),
-        "build",
-      ],
-      repoRoot,
-      { NODE_ENV: "production" },
-    );
+    const buildOrder = [
+      "@blocknote/core",
+      "@blocknote/collaboration",
+      "@blocknote/collaboration-server",
+      "@blocknote/react",
+      "@blocknote/server-util",
+      "@blocknote/test-utils",
+    ];
+    for (const packageName of buildOrder) {
+      const packageCase = allPackageCases.find(
+        (candidate) => candidate.packageName === packageName,
+      )!;
+      const cwd = path.join(packageRoot, packageCase.workspaceDirectory);
+      run(tsgoBinary, ["-p", "tsconfig.json"], cwd, {
+        NODE_ENV: "production",
+      });
+      run(vpBinary, ["build"], cwd, { NODE_ENV: "production" });
+    }
 
     const artifacts = allPackageCases.map((packageCase) => {
       const outputDirectory = path.join(
@@ -229,8 +302,7 @@ export const buildAndPackPackages = (): PackedArtifactSet => {
         packageCase.workspaceDirectory,
       );
       mkdirSync(outputDirectory, { recursive: true });
-      run(
-        "pnpm",
+      runPnpm(
         ["pack", "--pack-destination", outputDirectory],
         path.join(packageRoot, packageCase.workspaceDirectory),
       );
@@ -273,6 +345,38 @@ const artifactFor = (artifacts: PackedArtifactSet, packageName: string) => {
   return artifact;
 };
 
+export const assertExactPackedArtifactSet = (artifacts: PackedArtifactSet) => {
+  const expected = new Set<string>(
+    packedPackageCases.map(({ packageName }) => packageName),
+  );
+  const counts = new Map<string, number>();
+  for (const artifact of artifacts.artifacts) {
+    counts.set(
+      artifact.packageCase.packageName,
+      (counts.get(artifact.packageCase.packageName) ?? 0) + 1,
+    );
+  }
+  for (const packageName of expected) {
+    if (counts.get(packageName) !== 1) {
+      throw new Error(
+        `Expected exactly one packed artifact for ${packageName}.`,
+      );
+    }
+  }
+  const unexpected = [...counts.keys()].filter((name) => !expected.has(name));
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Unexpected packed BlockNote artifacts: ${unexpected.join(", ")}`,
+    );
+  }
+  const versions = new Set(artifacts.artifacts.map(({ version }) => version));
+  if (versions.size !== 1) {
+    throw new Error(
+      `Packed BlockNote versions must match: ${[...versions].join(", ")}`,
+    );
+  }
+};
+
 const createConsumerManifest = (artifacts: PackedArtifactSet) => ({
   name: "blocknote-packed-consumer",
   private: true,
@@ -287,15 +391,25 @@ const createConsumerManifest = (artifacts: PackedArtifactSet) => ({
     Object.fromEntries(
       packedPackageCases.map(({ packageName }) => [
         packageName,
-        `file:${artifactFor(artifacts, packageName).tarballPath}`,
+        `file:.tarballs/${artifactFor(artifacts, packageName).tarballName}`,
       ]),
     ),
   ),
 });
 
+const stagePackedArtifacts = (
+  consumerDirectory: string,
+  artifacts: PackedArtifactSet,
+) => {
+  const directory = path.join(consumerDirectory, ".tarballs");
+  mkdirSync(directory, { recursive: true });
+  for (const artifact of artifacts.artifacts) {
+    cpSync(artifact.tarballPath, path.join(directory, artifact.tarballName));
+  }
+};
+
 const installConsumer = (consumerDirectory: string) => {
-  run(
-    "pnpm",
+  runPnpm(
     ["install", "--lockfile=false", "--ignore-scripts", "--prefer-offline"],
     consumerDirectory,
   );
@@ -525,10 +639,13 @@ export const inspectInstalledPackages = (
     }
     if (source) {
       const tarballName = path.basename(source.tarballPath);
+      const packageSlug = packageName.slice("@blocknote/".length);
       const localStoreEntry = installedPath
         .split(path.sep)
         .find(
-          (entry) => entry.includes("file+") && entry.includes(tarballName),
+          (entry) =>
+            entry.includes("file+") &&
+            (entry.includes(tarballName) || entry.includes(packageSlug)),
         );
       if (!localStoreEntry) {
         throw new Error(
@@ -547,6 +664,7 @@ const createRuntimeProbe = () => {
   );
 
   return `
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -556,8 +674,10 @@ if ("window" in globalThis || "document" in globalThis) {
 
 const entries = ${JSON.stringify(entries)};
 const proof = [];
+const require = createRequire(import.meta.url);
 
 for (const entry of entries) {
+  const cacheBefore = new Set(Object.keys(require.cache));
   const resolvedUrl = import.meta.resolve(entry.specifier);
   const resolvedPath = fileURLToPath(resolvedUrl);
 
@@ -576,6 +696,19 @@ for (const entry of entries) {
   if ("window" in globalThis || "document" in globalThis) {
     throw new Error(entry.specifier + " created browser globals during import");
   }
+  const required = require(entry.specifier);
+  if (!(entry.exportName in required)) {
+    throw new Error(entry.specifier + " CommonJS export is missing " + entry.exportName);
+  }
+
+  if (["@blocknote/server-util/headless", "@blocknote/server-util/collaboration", "@blocknote/collaboration-server"].includes(entry.specifier)) {
+    const loaded = Object.keys(require.cache).filter((value) => !cacheBefore.has(value)).join("\\n");
+    for (const forbidden of ["/jsdom/", "/react-dom/"]) {
+      if (loaded.includes(forbidden)) {
+        throw new Error(entry.specifier + " loaded forbidden module " + forbidden);
+      }
+    }
+  }
 
   proof.push({ ...entry, resolvedPath });
 }
@@ -585,23 +718,21 @@ process.stdout.write(JSON.stringify(proof));
 };
 
 const createTypeProbe = () => {
-  const imports = packedPackageCases.flatMap(
-    ({ publicImports }, packageIndex) =>
-      publicImports.map(
-        ({ specifier, exportName }, importIndex) =>
-          `import { ${exportName} as value_${packageIndex}_${importIndex} } from ${JSON.stringify(specifier)};`,
-      ),
-  );
-  const values = packedPackageCases.flatMap(({ publicImports }, packageIndex) =>
-    publicImports.map(
-      (_, importIndex) => `value_${packageIndex}_${importIndex}`,
+  return readFileSync(
+    path.join(
+      repoRoot,
+      "tests",
+      "src",
+      "unit",
+      "nextjs",
+      "public-contract.mts",
     ),
+    "utf8",
   );
-
-  return `${imports.join("\n")}\n\nconst publicValues = [${values.join(", ")}] as const;\nvoid publicValues;\n`;
 };
 
 export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
+  assertExactPackedArtifactSet(artifacts);
   const consumerDirectory = mkdtempSync(
     path.join(tmpdir(), "blocknote-consumer-"),
   );
@@ -611,10 +742,18 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
       path.join(consumerDirectory, "package.json"),
       `${JSON.stringify(createConsumerManifest(artifacts), null, 2)}\n`,
     );
+    stagePackedArtifacts(consumerDirectory, artifacts);
+    const sources = writeHermeticWorkspace(
+      consumerDirectory,
+      packedPackageCases,
+    );
+    assertStagedTarballs(sources, artifacts);
     installConsumer(consumerDirectory);
     const installedPackages = inspectInstalledPackages(
       consumerDirectory,
       artifacts,
+      packedPackageCases,
+      sources,
     );
 
     const runtimeProbePath = path.join(consumerDirectory, "runtime.mjs");
@@ -661,6 +800,7 @@ export const runPublicConsumerProbe = (artifacts: PackedArtifactSet) => {
 };
 
 export const prepareNextConsumer = (artifacts: PackedArtifactSet) => {
+  assertExactPackedArtifactSet(artifacts);
   const sourceDirectory = path.join(repoRoot, "tests", "nextjs-test-app");
   const consumerDirectory = mkdtempSync(
     path.join(tmpdir(), "blocknote-next-consumer-"),
@@ -690,14 +830,22 @@ export const prepareNextConsumer = (artifacts: PackedArtifactSet) => {
         ["BLOCKNOTE_CORE_TARBALL", "@blocknote/core"],
         ["BLOCKNOTE_REACT_TARBALL", "@blocknote/react"],
         ["BLOCKNOTE_SERVER_UTIL_TARBALL", "@blocknote/server-util"],
-        ["BLOCKNOTE_MANTINE_TARBALL", "@blocknote/mantine"],
+        ["BLOCKNOTE_COLLABORATION_TARBALL", "@blocknote/collaboration"],
+        [
+          "BLOCKNOTE_COLLABORATION_SERVER_TARBALL",
+          "@blocknote/collaboration-server",
+        ],
+        ["BLOCKNOTE_TEST_UTILS_TARBALL", "@blocknote/test-utils"],
       ].map(([variable, packageName]) => [
         variable,
         artifactFor(artifacts, packageName).tarballPath,
       ]),
     );
+    if (pnpmCli) {
+      environment.BLOCKNOTE_PNPM_CLI = pnpmCli;
+    }
 
-    const packageCases = [...packedPackageCases, ...nextOnlyPackageCases];
+    const packageCases = packedPackageCases;
     const sources = writeHermeticWorkspace(consumerDirectory, packageCases);
     run("bash", ["setup.sh"], consumerDirectory, environment);
     assertStagedTarballs(sources, artifacts);

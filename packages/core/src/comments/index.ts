@@ -6,3 +6,8 @@ export * from "./threadstore/ThreadStoreAuth.js";
 export * from "./threadstore/TipTapThreadStore.js";
 export * from "./threadstore/createThreadStore.js";
 export * from "./types.js";
+export * from "./external/BlockNoteCommentAnchor.js";
+export * from "./external/BlockNoteCommentAnchorCapture.js";
+export * from "./external/BlockNoteCommentAnchorVerificationBundle.js";
+export * from "./external/BlockNoteCreateThreadCommand.js";
+export * from "./external/ExternalCommentsRuntime.js";

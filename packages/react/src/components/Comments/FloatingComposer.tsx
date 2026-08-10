@@ -20,6 +20,7 @@ import { useBlockNoteEditor } from "../../hooks/useBlockNoteEditor.js";
 import { useExtension } from "../../hooks/useExtension.js";
 import { useDictionary } from "../../i18n/dictionary.js";
 import { CommentEditor } from "./CommentEditor.js";
+import { useOptionalBlockNoteCommentsController } from "./useBlockNoteCommentsState.js";
 
 type FloatingComposerActionsProps = {
   isFocused: boolean;
@@ -69,23 +70,29 @@ export function FloatingComposer<
   const newCommentEditor = props.newCommentEditor;
 
   const comments = useExtension(CommentsExtension);
+  const commentsController = useOptionalBlockNoteCommentsController();
 
   const Components = useComponentsContext()!;
   const dict = useDictionary();
 
   const onSave = useCallback(async () => {
     // (later) For REST API, we should implement a loading state and error state
-    await comments.createThread({
+    const options = {
       initialComment: {
         body: newCommentEditor.document,
       },
-    });
-    comments.stopPendingComment();
+    };
+    if (commentsController) {
+      await commentsController.save(options);
+    } else {
+      await comments.createThread(options);
+      comments.stopPendingComment();
+    }
     editor.transact((tr) => {
       tr.setSelection(TextSelection.create(tr.doc, tr.selection.to));
     });
     editor.focus();
-  }, [comments, newCommentEditor, editor]);
+  }, [comments, commentsController, newCommentEditor, editor]);
 
   return (
     <Components.Comments.Card className={"bn-thread"}>

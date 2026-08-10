@@ -19,6 +19,7 @@ export function createSuggestionsRuntimeExtension(
       renderer: options.renderer,
       creatorId: uuidv4(),
       getActorId: () => options.user.id ?? null,
+      authorityKey: options.suggestionDoc.guid,
     });
     return configured({ editor, context });
   };

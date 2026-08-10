@@ -13,6 +13,7 @@ import { useDictionary } from "../../i18n/dictionary.js";
 import { CommentEditor } from "./CommentEditor.js";
 import { Comments } from "./Comments.js";
 import { defaultCommentEditorSchema } from "./defaultCommentEditorSchema.js";
+import { useOptionalBlockNoteCommentsController } from "./useBlockNoteCommentsState.js";
 
 type ReplyActionsProps = {
   isFocused: boolean;
@@ -117,6 +118,7 @@ export const Thread = ({
   const dict = useDictionary();
 
   const comments = useExtension(CommentsExtension);
+  const commentsController = useOptionalBlockNoteCommentsController();
 
   const ownNewCommentEditor = useCreateBlockNote({
     trailingBlock: false,
@@ -135,16 +137,21 @@ export const Thread = ({
   const newCommentEditor = providedNewCommentEditor ?? ownNewCommentEditor;
 
   const onNewCommentSave = useCallback(async () => {
-    await comments.threadStore.addComment({
+    const options = {
       comment: {
         body: newCommentEditor.document,
       },
       threadId: thread.id,
-    });
+    };
+    if (commentsController) {
+      await commentsController.addComment(options);
+    } else {
+      await comments.threadStore.addComment(options);
+    }
 
     // reset editor
     newCommentEditor.removeBlocks(newCommentEditor.document);
-  }, [comments, newCommentEditor, thread.id]);
+  }, [comments, commentsController, newCommentEditor, thread.id]);
 
   return (
     <Components.Comments.Card

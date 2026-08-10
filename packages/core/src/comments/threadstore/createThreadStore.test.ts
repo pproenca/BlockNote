@@ -303,6 +303,66 @@ describe("createThreadStore", () => {
     unsubscribe();
   });
 
+  it("keeps one idempotency key across concurrent, aborted, and unknown-outcome retries", async () => {
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const created = thread("created", 1);
+    const firstReceipt =
+      deferred<Awaited<ReturnType<Callbacks["createThread"]>>>();
+    const keys: string[] = [];
+    harness.behavior.createThread = (options) => {
+      keys.push(options.idempotencyKey);
+      return firstReceipt.promise;
+    };
+    const command = harness.store.createThreadCommand({
+      initialComment: { body: [] },
+    });
+    const first = command.execute();
+    const concurrent = command.execute();
+    expect(concurrent).toBe(first);
+    firstReceipt.reject(new Error("unknown outcome"));
+    await expect(first).rejects.toThrow("unknown outcome");
+
+    harness.behavior.createThread = async (options) => {
+      keys.push(options.idempotencyKey);
+      return mutationReceipt(upsertCommit(revision(1), created), created);
+    };
+    await expect(command.execute()).resolves.toMatchObject({ id: "created" });
+    await expect(command.execute()).resolves.toMatchObject({ id: "created" });
+    expect(new Set(keys).size).toBe(1);
+
+    const secondCreated = thread("second", 2);
+    harness.behavior.createThread = async (options) => {
+      keys.push(options.idempotencyKey);
+      return mutationReceipt(
+        upsertCommit(revision(2), secondCreated),
+        secondCreated,
+      );
+    };
+    await harness.store
+      .createThreadCommand({ initialComment: { body: [] } })
+      .execute();
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it("aborts only the caller wait while retaining the authoritative operation", async () => {
+    const harness = createHarness(snapshot([], revision(0), "complete"));
+    const created = thread("created", 1);
+    const receipt = deferred<Awaited<ReturnType<Callbacks["createThread"]>>>();
+    harness.behavior.createThread = () => receipt.promise;
+    const command = harness.store.createThreadCommand({
+      initialComment: { body: [] },
+    });
+    const controller = new AbortController();
+    const waiting = command.execute({ signal: controller.signal });
+    controller.abort(new Error("caller stopped"));
+    await expect(waiting).rejects.toThrow("caller stopped");
+
+    receipt.resolve(
+      mutationReceipt(upsertCommit(revision(1), created), created),
+    );
+    await expect(command.execute()).resolves.toMatchObject({ id: "created" });
+  });
+
   it("cleans up a rejected load despite a throwing subscriber", async () => {
     const harness = createHarness(snapshot([], revision(1), "partial", "next"));
     harness.behavior.loadMore = async () => {
