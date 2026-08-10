@@ -9,7 +9,6 @@ blocknote_e2e_dep_files() {
     echo tests/docker-build.sh
     echo tests/docker-run.sh
     echo tests/docker-deps-hash.sh
-    echo ../../patches/@hocuspocus__provider@4.4.0.patch
     echo ../yjs/package.json
     find patches examples \( -name node_modules -prune \) -o -type f -print 2>/dev/null
     find . -name package.json \

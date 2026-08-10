@@ -6,7 +6,7 @@
 # it's viewable from the host browser even though the browser itself is headless.
 #
 # The default build context is the BlockNote root; a named monorepo context
-# supplies only native Y's manifest and the root provider patch. Host
+# supplies only native Y's manifest. Host
 # node_modules are NOT reused (they hold macOS-native binaries — vite-plus napi,
 # oxc, esbuild); deps are installed fresh for Linux here.
 #
@@ -34,7 +34,6 @@ RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY --parents pnpm-lock.yaml pnpm-workspace.yaml **/package.json ./
 # pnpm patches are referenced by the lockfile and required during install.
 COPY patches ./patches
-COPY --from=monorepo patches/@hocuspocus__provider@4.4.0.patch /repo/patches/@hocuspocus__provider@4.4.0.patch
 COPY --from=monorepo platform/yjs/package.json /repo/platform/yjs/package.json
 
 # Install workspace deps (Linux binaries) + bootstrap the vite-plus toolchain

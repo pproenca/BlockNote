@@ -72,11 +72,13 @@ describe("Docker e2e scripts", () => {
       "tests/docker-build.sh",
       "tests/docker-run.sh",
       "tests/docker-deps-hash.sh",
-      "../../patches/@hocuspocus__provider@4.4.0.patch",
       "../yjs/package.json",
     ]) {
       expect(helper).toContain(input);
     }
+    expect(helper).not.toContain(
+      "../../patches/@hocuspocus__provider@4.4.0.patch",
+    );
     expect(helper).toContain("while IFS= read -r file");
   });
 
@@ -87,8 +89,9 @@ describe("Docker e2e scripts", () => {
     expect(dockerfile).toContain(
       "platform/yjs/package.json /repo/platform/yjs/package.json",
     );
-    expect(dockerfile).toContain(
-      "patches/@hocuspocus__provider@4.4.0.patch /repo/patches/@hocuspocus__provider@4.4.0.patch",
+    expect(dockerfile).toContain("COPY patches ./patches");
+    expect(dockerfile).not.toContain(
+      "COPY --from=monorepo patches/@hocuspocus__provider@4.4.0.patch",
     );
   });
 

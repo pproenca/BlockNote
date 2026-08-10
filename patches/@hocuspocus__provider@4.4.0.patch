@@ -1,0 +1,415 @@
+diff --git a/dist/hocuspocus-provider.cjs b/dist/hocuspocus-provider.cjs
+index 95d5270..ea0452e 100644
+--- a/dist/hocuspocus-provider.cjs
++++ b/dist/hocuspocus-provider.cjs
+@@ -357,9 +357,16 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+ 			this.connectionAttempt = null;
+ 			this.status = WebSocketStatus.Connected;
+ 			this.emit("status", { status: WebSocketStatus.Connected });
++			for (const documentName of this.configuration.providerMap.keys()) this.resetDocumentSyncQueue(documentName);
+ 			this.emit("connect");
++			const documentNames = new Set(this.messageQueue.flatMap((message) => {
++				if (!(message instanceof Uint8Array)) return [];
++				const parsed = this.parseQueuedMessage(message);
++				return parsed ? [parsed.documentName] : [];
++			}));
+ 			this.messageQueue.forEach((message) => this.send(message));
+ 			this.messageQueue = [];
++			for (const documentName of documentNames) this.emitDocumentQueueChange(documentName);
+ 		}
+ 	}
+ 	stopConnectionAttempt() {
+@@ -426,6 +433,32 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+ 			});
+ 		}
+ 		this.messageQueue.push(message);
++		if (message instanceof Uint8Array) {
++			const parsed = this.parseQueuedMessage(message);
++			if (parsed) this.emitDocumentQueueChange(parsed.documentName);
++		}
++	}
++	countQueuedDocumentUpdates(documentName) {
++		return this.messageQueue.filter((queued) => {
++			if (!(queued instanceof Uint8Array)) return false;
++			const parsed = this.parseQueuedMessage(queued);
++			return parsed?.documentName === documentName && parsed.messageType === MessageType.Sync;
++		}).length;
++	}
++	resetDocumentSyncQueue(documentName) {
++		this.messageQueue = this.messageQueue.filter((queued) => {
++			if (!(queued instanceof Uint8Array)) return true;
++			const parsed = this.parseQueuedMessage(queued);
++			return !(parsed?.documentName === documentName && parsed.messageType === MessageType.Sync);
++		});
++		this.emitDocumentQueueChange(documentName);
++	}
++	emitDocumentQueueChange(documentName) {
++		const provider = this.configuration.providerMap.get(documentName);
++		provider?.emit("documentQueueChange", {
++			queuedUpdates: this.countQueuedDocumentUpdates(documentName),
++			unsyncedChanges: provider.unsyncedChanges
++		});
+ 	}
+ 	send(message) {
+ 		if (this.webSocket?.readyState === _hocuspocus_common.WsReadyStates.Open) this.webSocket.send(message);
+@@ -669,7 +702,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			onAwarenessUpdate: () => null,
+ 			onAwarenessChange: () => null,
+ 			onStateless: () => null,
+-			onUnsyncedChanges: () => null
++			onUnsyncedChanges: () => null,
++			onDocumentQueueChange: () => null
+ 		};
+ 		this.isSynced = false;
+ 		this.unsyncedChanges = 0;
+@@ -704,6 +738,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.on("awarenessChange", this.configuration.onAwarenessChange);
+ 		this.on("stateless", this.configuration.onStateless);
+ 		this.on("unsyncedChanges", this.configuration.onUnsyncedChanges);
++		this.on("documentQueueChange", this.configuration.onDocumentQueueChange);
+ 		this.on("authenticated", this.configuration.onAuthenticated);
+ 		this.on("authenticationFailed", this.configuration.onAuthenticationFailed);
+ 		this.awareness?.on("update", () => {
+@@ -804,6 +839,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.scheduleFlush();
+ 	}
+ 	awarenessUpdateHandler({ added, updated, removed }, origin) {
++		if (origin === this) return;
+ 		const changedClients = added.concat(updated).concat(removed);
+ 		if (!this.batchingEnabled) {
+ 			this.send(AwarenessMessage, {
+@@ -888,7 +924,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		return this.configuration.token;
+ 	}
+ 	startSync() {
++		this.configuration.websocketProvider.resetDocumentSyncQueue(this.effectiveName);
+ 		this.resetUnsyncedChanges();
+ 		this.send(SyncStepOneMessage, {
+ 			document: this.document,
+ 			documentName: this.effectiveName
+@@ -898,6 +935,10 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			clients: [this.document.clientID],
+ 			documentName: this.effectiveName
+ 		});
++		this.emit("documentQueueChange", {
++			queuedUpdates: this.configuration.websocketProvider.countQueuedDocumentUpdates(this.effectiveName),
++			unsyncedChanges: this.unsyncedChanges
++		});
+ 	}
+ 	send(message, args) {
+ 		if (!this._isAttached) return;
+@@ -996,4 +1037,4 @@ exports.HocuspocusProvider = HocuspocusProvider;
+ exports.HocuspocusProviderWebsocket = HocuspocusProviderWebsocket;
+ exports.MessageType = MessageType;
+ exports.WebSocketStatus = WebSocketStatus;
+-//# sourceMappingURL=hocuspocus-provider.cjs.map
+\ No newline at end of file
++//# sourceMappingURL=hocuspocus-provider.cjs.map
+diff --git a/dist/hocuspocus-provider.esm.js b/dist/hocuspocus-provider.esm.js
+index df0decb..6368049 100644
+--- a/dist/hocuspocus-provider.esm.js
++++ b/dist/hocuspocus-provider.esm.js
+@@ -327,9 +327,16 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+ 			this.connectionAttempt = null;
+ 			this.status = WebSocketStatus.Connected;
+ 			this.emit("status", { status: WebSocketStatus.Connected });
++			for (const documentName of this.configuration.providerMap.keys()) this.resetDocumentSyncQueue(documentName);
+ 			this.emit("connect");
++			const documentNames = new Set(this.messageQueue.flatMap((message) => {
++				if (!(message instanceof Uint8Array)) return [];
++				const parsed = this.parseQueuedMessage(message);
++				return parsed ? [parsed.documentName] : [];
++			}));
+ 			this.messageQueue.forEach((message) => this.send(message));
+ 			this.messageQueue = [];
++			for (const documentName of documentNames) this.emitDocumentQueueChange(documentName);
+ 		}
+ 	}
+ 	stopConnectionAttempt() {
+@@ -396,6 +403,32 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+ 			});
+ 		}
+ 		this.messageQueue.push(message);
++		if (message instanceof Uint8Array) {
++			const parsed = this.parseQueuedMessage(message);
++			if (parsed) this.emitDocumentQueueChange(parsed.documentName);
++		}
++	}
++	countQueuedDocumentUpdates(documentName) {
++		return this.messageQueue.filter((queued) => {
++			if (!(queued instanceof Uint8Array)) return false;
++			const parsed = this.parseQueuedMessage(queued);
++			return parsed?.documentName === documentName && parsed.messageType === MessageType.Sync;
++		}).length;
++	}
++	resetDocumentSyncQueue(documentName) {
++		this.messageQueue = this.messageQueue.filter((queued) => {
++			if (!(queued instanceof Uint8Array)) return true;
++			const parsed = this.parseQueuedMessage(queued);
++			return !(parsed?.documentName === documentName && parsed.messageType === MessageType.Sync);
++		});
++		this.emitDocumentQueueChange(documentName);
++	}
++	emitDocumentQueueChange(documentName) {
++		const provider = this.configuration.providerMap.get(documentName);
++		provider?.emit("documentQueueChange", {
++			queuedUpdates: this.countQueuedDocumentUpdates(documentName),
++			unsyncedChanges: provider.unsyncedChanges
++		});
+ 	}
+ 	send(message) {
+ 		if (this.webSocket?.readyState === WsReadyStates.Open) this.webSocket.send(message);
+@@ -639,7 +672,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			onAwarenessUpdate: () => null,
+ 			onAwarenessChange: () => null,
+ 			onStateless: () => null,
+-			onUnsyncedChanges: () => null
++			onUnsyncedChanges: () => null,
++			onDocumentQueueChange: () => null
+ 		};
+ 		this.isSynced = false;
+ 		this.unsyncedChanges = 0;
+@@ -674,6 +708,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.on("awarenessChange", this.configuration.onAwarenessChange);
+ 		this.on("stateless", this.configuration.onStateless);
+ 		this.on("unsyncedChanges", this.configuration.onUnsyncedChanges);
++		this.on("documentQueueChange", this.configuration.onDocumentQueueChange);
+ 		this.on("authenticated", this.configuration.onAuthenticated);
+ 		this.on("authenticationFailed", this.configuration.onAuthenticationFailed);
+ 		this.awareness?.on("update", () => {
+@@ -774,6 +809,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.scheduleFlush();
+ 	}
+ 	awarenessUpdateHandler({ added, updated, removed }, origin) {
++		if (origin === this) return;
+ 		const changedClients = added.concat(updated).concat(removed);
+ 		if (!this.batchingEnabled) {
+ 			this.send(AwarenessMessage, {
+@@ -858,7 +894,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		return this.configuration.token;
+ 	}
+ 	startSync() {
++		this.configuration.websocketProvider.resetDocumentSyncQueue(this.effectiveName);
+ 		this.resetUnsyncedChanges();
+ 		this.send(SyncStepOneMessage, {
+ 			document: this.document,
+ 			documentName: this.effectiveName
+@@ -868,6 +905,10 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			clients: [this.document.clientID],
+ 			documentName: this.effectiveName
+ 		});
++		this.emit("documentQueueChange", {
++			queuedUpdates: this.configuration.websocketProvider.countQueuedDocumentUpdates(this.effectiveName),
++			unsyncedChanges: this.unsyncedChanges
++		});
+ 	}
+ 	send(message, args) {
+ 		if (!this._isAttached) return;
+@@ -962,4 +1003,4 @@ var HocuspocusProvider = class extends EventEmitter {
+ 
+ //#endregion
+ export { AwarenessError, HocuspocusProvider, HocuspocusProviderWebsocket, MessageType, WebSocketStatus };
+-//# sourceMappingURL=hocuspocus-provider.esm.js.map
+\ No newline at end of file
++//# sourceMappingURL=hocuspocus-provider.esm.js.map
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 74ff44e..da59071 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -147,6 +147,10 @@ type onSyncedParameters = {
+ type onUnsyncedChangesParameters = {
+   number: number;
+ };
++type DocumentQueueState = Readonly<{
++  queuedUpdates: number;
++  unsyncedChanges: number;
++}>;
+ type onDisconnectParameters = {
+   event: CloseEvent;
+ };
+@@ -286,6 +290,9 @@ declare class HocuspocusProviderWebsocket extends EventEmitter {
+   disconnect(): void;
+   private parseQueuedMessage;
+   private addToQueue;
++  countQueuedDocumentUpdates(documentName: string): number;
++  resetDocumentSyncQueue(documentName: string): void;
++  private emitDocumentQueueChange;
+   send(message: any): void;
+   onClose({
+     event
+@@ -366,6 +373,7 @@ interface CompleteHocuspocusProviderConfiguration {
+   onAwarenessChange: (data: onAwarenessChangeParameters) => void;
+   onStateless: (data: onStatelessParameters) => void;
+   onUnsyncedChanges: (data: onUnsyncedChangesParameters) => void;
++  onDocumentQueueChange: (data: DocumentQueueState) => void;
+ }
+ declare class AwarenessError extends Error {
+   code: number;
+@@ -467,4 +475,4 @@ declare class HocuspocusProvider extends EventEmitter {
+   setAwarenessField(key: string, value: any): void;
+ }
+ //#endregion
+-export { AuthorizedScope, AwarenessError, CompleteHocuspocusProviderConfiguration, CompleteHocuspocusProviderWebsocketConfiguration, Constructable, ConstructableOutgoingMessage, HocusPocusWebSocket, HocuspocusProvider, HocuspocusProviderConfiguration, HocuspocusProviderWebsocket, HocuspocusProviderWebsocketConfiguration, HocuspocusWebSocket, MessageType, OutgoingMessageArguments, OutgoingMessageInterface, StatesArray, WebSocketStatus, onAuthenticatedParameters, onAuthenticationFailedParameters, onAwarenessChangeParameters, onAwarenessUpdateParameters, onCloseParameters, onDisconnectParameters, onMessageParameters, onOpenParameters, onOutgoingMessageParameters, onStatelessParameters, onStatusParameters, onSyncedParameters, onUnsyncedChangesParameters };
+\ No newline at end of file
++export { AuthorizedScope, AwarenessError, CompleteHocuspocusProviderConfiguration, CompleteHocuspocusProviderWebsocketConfiguration, Constructable, ConstructableOutgoingMessage, DocumentQueueState, HocusPocusWebSocket, HocuspocusProvider, HocuspocusProviderConfiguration, HocuspocusProviderWebsocket, HocuspocusProviderWebsocketConfiguration, HocuspocusWebSocket, MessageType, OutgoingMessageArguments, OutgoingMessageInterface, StatesArray, WebSocketStatus, onAuthenticatedParameters, onAuthenticationFailedParameters, onAwarenessChangeParameters, onAwarenessUpdateParameters, onCloseParameters, onDisconnectParameters, onMessageParameters, onOpenParameters, onOutgoingMessageParameters, onStatelessParameters, onStatusParameters, onSyncedParameters, onUnsyncedChangesParameters };
+diff --git a/src/HocuspocusProvider.ts b/src/HocuspocusProvider.ts
+index c855ea3..69fb273 100644
+--- a/src/HocuspocusProvider.ts
++++ b/src/HocuspocusProvider.ts
+@@ -32,6 +32,7 @@ import type {
+ 	onStatusParameters,
+ 	onSyncedParameters,
+ 	onUnsyncedChangesParameters,
++	DocumentQueueState,
+ } from "./types.ts";
+ 
+ export type HocuspocusProviderConfiguration = Required<
+@@ -129,6 +130,7 @@ export interface CompleteHocuspocusProviderConfiguration {
+ 	onAwarenessChange: (data: onAwarenessChangeParameters) => void;
+ 	onStateless: (data: onStatelessParameters) => void;
+ 	onUnsyncedChanges: (data: onUnsyncedChangesParameters) => void;
++	onDocumentQueueChange: (data: DocumentQueueState) => void;
+ }
+ 
+ export class AwarenessError extends Error {
+@@ -161,6 +163,7 @@ export class HocuspocusProvider extends EventEmitter {
+ 		onAwarenessChange: () => null,
+ 		onStateless: () => null,
+ 		onUnsyncedChanges: () => null,
++		onDocumentQueueChange: () => null,
+ 	};
+ 
+ 	isSynced = false;
+@@ -230,6 +233,10 @@ export class HocuspocusProvider extends EventEmitter {
+ 		this.on("awarenessChange", this.configuration.onAwarenessChange);
+ 		this.on("stateless", this.configuration.onStateless);
+ 		this.on("unsyncedChanges", this.configuration.onUnsyncedChanges);
++		this.on(
++			"documentQueueChange",
++			this.configuration.onDocumentQueueChange,
++		);
+ 
+ 		this.on("authenticated", this.configuration.onAuthenticated);
+ 		this.on("authenticationFailed", this.configuration.onAuthenticationFailed);
+@@ -417,6 +424,10 @@ export class HocuspocusProvider extends EventEmitter {
+ 	}
+ 
+ 	awarenessUpdateHandler({ added, updated, removed }: any, origin: any) {
++		if (origin === this) {
++			return;
++		}
++
+ 		const changedClients = added.concat(updated).concat(removed);
+ 
+ 		if (!this.batchingEnabled) {
+@@ -548,7 +559,10 @@ export class HocuspocusProvider extends EventEmitter {
+ 	}
+ 
+ 	startSync() {
++		this.configuration.websocketProvider.resetDocumentSyncQueue(
++			this.effectiveName,
++		);
+ 		this.resetUnsyncedChanges();
+ 
+ 		this.send(SyncStepOneMessage, {
+ 			document: this.document,
+@@ -562,6 +578,14 @@ export class HocuspocusProvider extends EventEmitter {
+ 				documentName: this.effectiveName,
+ 			});
+ 		}
++
++		this.emit("documentQueueChange", {
++			queuedUpdates:
++				this.configuration.websocketProvider.countQueuedDocumentUpdates(
++					this.effectiveName,
++				),
++			unsyncedChanges: this.unsyncedChanges,
++		} satisfies DocumentQueueState);
+ 	}
+ 
+ 	send(message: ConstructableOutgoingMessage, args: any) {
+diff --git a/src/HocuspocusProviderWebsocket.ts b/src/HocuspocusProviderWebsocket.ts
+index 770670c..167b45b 100644
+--- a/src/HocuspocusProviderWebsocket.ts
++++ b/src/HocuspocusProviderWebsocket.ts
+@@ -428,9 +428,22 @@ export class HocuspocusProviderWebsocket extends EventEmitter {
+ 
+ 			this.status = WebSocketStatus.Connected;
+ 			this.emit("status", { status: WebSocketStatus.Connected });
++			for (const documentName of this.configuration.providerMap.keys()) {
++				this.resetDocumentSyncQueue(documentName);
++			}
+ 			this.emit("connect");
++			const documentNames = new Set(
++				this.messageQueue.flatMap((message) => {
++					if (!(message instanceof Uint8Array)) return [];
++					const parsed = this.parseQueuedMessage(message);
++					return parsed ? [parsed.documentName] : [];
++				}),
++			);
+ 			this.messageQueue.forEach((message) => this.send(message));
+ 			this.messageQueue = [];
++			for (const documentName of documentNames) {
++				this.emitDocumentQueueChange(documentName);
++			}
+ 		}
+ 	}
+ 
+@@ -548,6 +561,41 @@ export class HocuspocusProviderWebsocket extends EventEmitter {
+ 			}
+ 		}
+ 		this.messageQueue.push(message);
++		if (message instanceof Uint8Array) {
++			const parsed = this.parseQueuedMessage(message);
++			if (parsed) this.emitDocumentQueueChange(parsed.documentName);
++		}
++	}
++
++	countQueuedDocumentUpdates(documentName: string) {
++		return this.messageQueue.filter((queued) => {
++			if (!(queued instanceof Uint8Array)) return false;
++			const parsed = this.parseQueuedMessage(queued);
++			return (
++				parsed?.documentName === documentName &&
++				parsed.messageType === MessageType.Sync
++			);
++		}).length;
++	}
++
++	resetDocumentSyncQueue(documentName: string) {
++		this.messageQueue = this.messageQueue.filter((queued) => {
++			if (!(queued instanceof Uint8Array)) return true;
++			const parsed = this.parseQueuedMessage(queued);
++			return !(
++				parsed?.documentName === documentName &&
++				parsed.messageType === MessageType.Sync
++			);
++		});
++		this.emitDocumentQueueChange(documentName);
++	}
++
++	private emitDocumentQueueChange(documentName: string) {
++		const provider = this.configuration.providerMap.get(documentName);
++		provider?.emit("documentQueueChange", {
++			queuedUpdates: this.countQueuedDocumentUpdates(documentName),
++			unsyncedChanges: provider.unsyncedChanges,
++		});
+ 	}
+ 
+ 	send(message: any) {
+diff --git a/src/types.ts b/src/types.ts
+index a381321..cbab36f 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -93,6 +93,11 @@ export type onUnsyncedChangesParameters = {
+ 	number: number;
+ };
+ 
++export type DocumentQueueState = Readonly<{
++	queuedUpdates: number;
++	unsyncedChanges: number;
++}>;
++
+ export type onDisconnectParameters = {
+ 	event: CloseEvent;
+ };
