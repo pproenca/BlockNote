@@ -363,11 +363,15 @@ export const buildAndPackPackages = (): PackedArtifactSet => {
       };
     });
 
-    runPnpm(["run", "dist"], nativeYRoot);
-    runPnpm(["run", "verify:pack"], nativeYRoot);
+    run("npm", ["run", "dist"], nativeYRoot);
+    run("npm", ["run", "verify:pack"], nativeYRoot);
     const engineDirectory = path.join(directory, "native-y");
     mkdirSync(engineDirectory, { recursive: true });
-    runPnpm(["pack", "--pack-destination", engineDirectory], nativeYRoot);
+    run(
+      "npm",
+      ["pack", "--ignore-scripts", "--pack-destination", engineDirectory],
+      nativeYRoot,
+    );
     const nativeYManifest = readNativeYManifest();
     const engineTarballName = findOnlyTarball(engineDirectory, "@pproenca/y");
     const engine: PackedEngineArtifact = {
