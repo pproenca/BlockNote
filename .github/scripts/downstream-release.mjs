@@ -561,8 +561,8 @@ if ("window" in globalThis || "document" in globalThis) {
 }
 
 function createConsumerTypeProbe() {
-  const contracts = downstreamPackages.flatMap(({ publicImports }) =>
-    publicImports,
+  const contracts = downstreamPackages.flatMap(
+    ({ publicImports }) => publicImports,
   );
   const imports = [];
   const bindings = [];

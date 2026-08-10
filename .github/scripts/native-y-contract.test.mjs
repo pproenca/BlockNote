@@ -173,7 +173,10 @@ test("installs Chromium before the production Next.js browser check", async () =
     dependencies,
   );
 
-  assert.ok(chromium > dependencies, "Chromium must install after dependencies");
+  assert.ok(
+    chromium > dependencies,
+    "Chromium must install after dependencies",
+  );
   assert.ok(
     nextIntegration > chromium,
     "Chromium must install before the Next.js integration test",
