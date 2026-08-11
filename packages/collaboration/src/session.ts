@@ -23,6 +23,7 @@ import { createRecoveryController } from "./cache/recovery-controller.js";
 import type { BlockNoteRecoveryStore } from "./cache/recovery-store.js";
 import { createBlockNoteCommentAnchorVerifier } from "./comments/comment-anchor-verifier.js";
 import { createBlockNoteEvents } from "./events.js";
+import { createBlockNoteDurabilityState } from "./durability-state.js";
 import { createHocuspocusProviderAdapter } from "./provider/hocuspocus-provider.js";
 import type {
   BlockNoteSession,
@@ -75,6 +76,7 @@ interface SessionDependencies {
         state: "saved" | "pending" | "offline" | "error",
       ) => void;
       readonly fatal: (error: unknown) => void;
+      readonly accessRevoked: () => void;
     };
   }) => Readonly<{
     connect(): void;
@@ -183,6 +185,9 @@ export async function createBlockNoteSessionWithDependencies<
     state = next;
     for (const listener of [...listeners]) listener(state);
   };
+  const durability = createBlockNoteDurabilityState((value) =>
+    publish({ durability: value }),
+  );
 
   const destroy = () => {
     if (destroyPromise) return destroyPromise;
@@ -299,7 +304,7 @@ export async function createBlockNoteSessionWithDependencies<
             return () => doc?.off("update", update);
           },
         },
-        durability: (durability) => publish({ durability }),
+        durability: durability.recovery,
         recoveryAvailable: (value) => events.emit("recoveryAvailable", value),
       });
       await recovery.start();
@@ -370,8 +375,32 @@ export async function createBlockNoteSessionWithDependencies<
       synced() {
         publish({ phase: "ready", readiness: "live", connection: "online" });
       },
-      durability(durability: "saved" | "pending" | "offline" | "error") {
-        publish({ durability });
+      durability(value: "saved" | "pending" | "offline" | "error") {
+        durability.provider(value);
+      },
+      accessRevoked() {
+        const downgrade = () => {
+          const access = options.access.get();
+          options.access.set({
+            ...access,
+            mode: "viewing",
+            edit: false,
+            suggest: false,
+            review: false,
+          });
+        };
+        if (!recovery) {
+          downgrade();
+          return;
+        }
+        void recovery
+          .invalidate()
+          .catch((error) => {
+            const failure = runtimeError(error);
+            publish({ error: failure });
+            events.emit("fatalError", failure);
+          })
+          .finally(downgrade);
       },
       fatal(error: unknown) {
         const failure = runtimeError(error);

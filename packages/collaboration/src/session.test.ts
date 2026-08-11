@@ -188,6 +188,25 @@ describe("createBlockNoteSession", () => {
     expect(session.editor.isEditable).toBe(false);
   });
 
+  it("downgrades document mutation access after provider revocation", async () => {
+    const fixture = harness();
+    const session = await createBlockNoteSessionWithDependencies(
+      fixture.options,
+      fixture.dependencies,
+    );
+
+    fixture.signals.accessRevoked();
+
+    expect(session.getState().access).toStrictEqual({
+      ...editing,
+      mode: "viewing",
+      edit: false,
+      suggest: false,
+      review: false,
+    });
+    expect(session.editor.isEditable).toBe(false);
+  });
+
   it("keeps viewing mode read only when edit capability is retained", async () => {
     const fixture = harness();
     const session = await createBlockNoteSessionWithDependencies(

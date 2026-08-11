@@ -47,7 +47,7 @@ overrides:
   yjs: 13.6.31
 
 patchedDependencies:
-  '@hocuspocus/provider@4.4.0': 701cfa7e8f80ab6676a032f4b4516c92a00b7d35a3e1ca51348fd156fc6e371d
+  '@hocuspocus/provider@4.4.0': d146f60e05a03f5368aa580092c20b9f67235486cf874fd90c0cd7a3c4a42c8b
   '@hocuspocus/server@4.4.0': 891ac23b0e1cd3466b9499bc982a11da3855563893fad5d35ef273b3561061f5
   '@y/prosemirror@2.0.0-6': 320bb2302614373f8ff70a3c815469a9a916e191a7ced09a8e3d34ac14deb051
 
@@ -5004,7 +5004,7 @@ importers:
     dependencies:
       '@hocuspocus/provider':
         specifier: catalog:collaboration
-        version: 4.4.0(patch_hash=701cfa7e8f80ab6676a032f4b4516c92a00b7d35a3e1ca51348fd156fc6e371d)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)
+        version: 4.4.0(patch_hash=d146f60e05a03f5368aa580092c20b9f67235486cf874fd90c0cd7a3c4a42c8b)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)
       '@y/protocols':
         specifier: ^1.0.6-rc.1
         version: 1.0.6-rc.1(@y/y@yjs)
@@ -5356,7 +5356,7 @@ importers:
         version: link:../react
       '@hocuspocus/provider':
         specifier: catalog:collaboration
-        version: 4.4.0(patch_hash=701cfa7e8f80ab6676a032f4b4516c92a00b7d35a3e1ca51348fd156fc6e371d)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)
+        version: 4.4.0(patch_hash=d146f60e05a03f5368aa580092c20b9f67235486cf874fd90c0cd7a3c4a42c8b)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)
       '@types/jsdom':
         specifier: ^21.1.7
         version: 21.1.7
@@ -17591,7 +17591,7 @@ snapshots:
     dependencies:
       lib0: 1.0.0-rc.22
 
-  '@hocuspocus/provider@4.4.0(patch_hash=701cfa7e8f80ab6676a032f4b4516c92a00b7d35a3e1ca51348fd156fc6e371d)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)':
+  '@hocuspocus/provider@4.4.0(patch_hash=d146f60e05a03f5368aa580092c20b9f67235486cf874fd90c0cd7a3c4a42c8b)(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)':
     dependencies:
       '@hocuspocus/common': 4.5.0
       '@lifeomic/attempt': 3.1.0

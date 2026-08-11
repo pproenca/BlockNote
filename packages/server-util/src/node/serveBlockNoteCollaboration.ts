@@ -1,4 +1,5 @@
 import type { BlockNoteCollaboration } from "@blocknote/collaboration-server";
+import { BlockNoteError } from "@blocknote/core";
 import { getBlockNoteCollaborationInternals } from "@blocknote/collaboration-server/internal";
 import {
   type Connection,
@@ -109,7 +110,17 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
           if (!current.runtimeConnection) {
             return false;
           }
-          await runtime.message(current.runtimeConnection, { update });
+          try {
+            await runtime.message(current.runtimeConnection, { update });
+          } catch (error) {
+            if (error instanceof BlockNoteError && error.code === "access-denied") {
+              throw Object.assign(new Error("BlockNote mutation access changed."), {
+                code: 4403,
+                reason: "permission-changed",
+              });
+            }
+            throw error;
+          }
           return true;
         },
       );

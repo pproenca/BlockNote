@@ -10,6 +10,7 @@ export interface BlockNoteRecoveryStore {
     record: BlockNoteCacheRecord,
     expectedRevision: number | null,
   ): Promise<boolean>;
+  deleteActive(key: string, generation: number): Promise<boolean>;
   loadRecovery(key: string): Promise<BlockNoteRecoveryRecord | null>;
   archive(record: BlockNoteRecoveryRecord): Promise<void>;
   deleteRecovery(key: string, generation: number): Promise<boolean>;
@@ -30,6 +31,12 @@ export function createMemoryRecoveryStore(): BlockNoteRecoveryStore {
         return false;
       }
       active.set(record.key, copyCacheRecord(record));
+      return true;
+    },
+    async deleteActive(key, generation) {
+      const current = active.get(key);
+      if (!current || current.generation !== generation) return false;
+      active.delete(key);
       return true;
     },
     async loadRecovery(key) {

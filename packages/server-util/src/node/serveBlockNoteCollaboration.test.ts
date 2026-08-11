@@ -224,4 +224,66 @@ describe("serveBlockNoteCollaboration", () => {
     first.destroy();
     second.destroy();
   });
+
+  it("closes rejected document mutations as forbidden", async () => {
+    let currentAccess = access;
+    const runtime = createBlockNoteCollaboration({
+      document: defineBlockNoteDocument({
+        id: "node-server-revocation-test",
+        version: "1",
+        schema: BlockNoteSchema.create(),
+      }),
+      store: createInMemoryDocumentStore<string>(),
+      authorization: createInMemoryAuthorizationProvider({
+        resolve: async () => ({
+          key: "doc",
+          actor: { id: "actor" },
+          access: async () => currentAccess,
+        }),
+      }),
+    });
+    const server = await serveBlockNoteCollaboration({
+      collaboration: runtime,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    const document = new Y.Doc();
+    let synced!: () => void;
+    let closed!: (event: { code: number; reason: string }) => void;
+    const ready = new Promise<void>((resolve) => (synced = resolve));
+    const close = new Promise<{ code: number; reason: string }>(
+      (resolve) => (closed = resolve),
+    );
+    const websocket = new HocuspocusProviderWebsocket({
+      url: `ws://${server.address.host}:${server.address.port}`,
+      autoConnect: false,
+    });
+    const provider = new HocuspocusProvider({
+      name: "doc",
+      document: document as never,
+      websocketProvider: websocket,
+      onSynced({ state }) {
+        if (state) synced();
+      },
+      onClose({ event }) {
+        closed(event);
+      },
+    });
+    provider.attach();
+    void websocket.connect();
+    await ready;
+
+    currentAccess = { ...access, edit: false };
+    document.get("content").insert(0, "rejected");
+
+    await expect(close).resolves.toMatchObject({
+      code: 1000,
+      reason: "permission-changed",
+    });
+
+    provider.destroy();
+    websocket.destroy();
+    await server.stop();
+    document.destroy();
+  });
 });

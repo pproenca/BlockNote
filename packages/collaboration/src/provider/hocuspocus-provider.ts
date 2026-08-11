@@ -13,12 +13,37 @@ export interface BlockNoteProviderSignals {
     state: "saved" | "pending" | "offline" | "error",
   ) => void;
   readonly fatal: (error: unknown) => void;
+  readonly accessRevoked: () => void;
 }
 
 export interface BlockNoteProviderAdapter {
   connect(): void;
   awareness(): unknown;
   destroy(): void;
+}
+
+export function observeBrowserConnectivity(input: {
+  readonly target: Pick<EventTarget, "addEventListener" | "removeEventListener">;
+  readonly connect: () => unknown;
+  readonly disconnect: () => void;
+  readonly status: BlockNoteProviderSignals["status"];
+  readonly durability: BlockNoteProviderSignals["durability"];
+}) {
+  const offline = () => {
+    input.disconnect();
+    input.status("offline");
+    input.durability("offline");
+  };
+  const online = () => {
+    input.status("connecting");
+    void input.connect();
+  };
+  input.target.addEventListener("offline", offline);
+  input.target.addEventListener("online", online);
+  return () => {
+    input.target.removeEventListener("offline", offline);
+    input.target.removeEventListener("online", online);
+  };
 }
 
 export function createHocuspocusProviderAdapter(input: {
@@ -34,6 +59,7 @@ export function createHocuspocusProviderAdapter(input: {
   });
   let destroyed = false;
   let provider: HocuspocusProvider | null = null;
+  let stopConnectivity = () => {};
   try {
     provider = new HocuspocusProvider({
       name: input.documentName,
@@ -64,10 +90,16 @@ export function createHocuspocusProviderAdapter(input: {
       },
       onDocumentQueueChange({ queuedUpdates, unsyncedChanges }) {
         input.signals.durability(
-          queuedUpdates > 0 || unsyncedChanges > 0 ? "pending" : "saved",
+          queuedUpdates > 0 || unsyncedChanges > 0
+            ? "pending"
+            : "saved",
         );
       },
       onClose({ event }) {
+        if (event.code === 4403 || event.reason === "permission-changed") {
+          websocket.disconnect();
+          input.signals.accessRevoked();
+        }
         const degraded =
           event.code === 1013 ||
           event.reason.includes("durability") ||
@@ -80,6 +112,15 @@ export function createHocuspocusProviderAdapter(input: {
       },
     });
     provider.attach();
+    if (typeof globalThis.addEventListener === "function") {
+      stopConnectivity = observeBrowserConnectivity({
+        target: globalThis,
+        connect: () => websocket.connect(),
+        disconnect: () => websocket.disconnect(),
+        status: input.signals.status,
+        durability: input.signals.durability,
+      });
+    }
   } catch (error) {
     provider?.destroy();
     websocket.destroy();
@@ -97,6 +138,7 @@ export function createHocuspocusProviderAdapter(input: {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      stopConnectivity();
       websocket.disconnect();
       active.destroy();
       websocket.destroy();

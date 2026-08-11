@@ -1,11 +1,12 @@
 diff --git a/dist/hocuspocus-provider.cjs b/dist/hocuspocus-provider.cjs
-index 95d5270..ea0452e 100644
+index 95d5270b55ef1aa7f4f15c4f5a512eaf2f09389a..bdb7450d4c1619c4fd4e533e8e5816153660a80b 100644
 --- a/dist/hocuspocus-provider.cjs
 +++ b/dist/hocuspocus-provider.cjs
-@@ -357,9 +357,16 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+@@ -357,9 +357,17 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
  			this.connectionAttempt = null;
  			this.status = WebSocketStatus.Connected;
  			this.emit("status", { status: WebSocketStatus.Connected });
++			this.cancelWebsocketRetry = void 0;
 +			for (const documentName of this.configuration.providerMap.keys()) this.resetDocumentSyncQueue(documentName);
  			this.emit("connect");
 +			const documentNames = new Set(this.messageQueue.flatMap((message) => {
@@ -19,7 +20,7 @@ index 95d5270..ea0452e 100644
  		}
  	}
  	stopConnectionAttempt() {
-@@ -426,6 +433,32 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+@@ -426,6 +434,32 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
  			});
  		}
  		this.messageQueue.push(message);
@@ -52,7 +53,35 @@ index 95d5270..ea0452e 100644
  	}
  	send(message) {
  		if (this.webSocket?.readyState === _hocuspocus_common.WsReadyStates.Open) this.webSocket.send(message);
-@@ -669,7 +702,8 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -498,7 +532,18 @@ var MessageReceiver = class {
+ 	applySyncMessage(provider, emitSynced) {
+ 		const { message } = this;
+ 		message.writeVarUint(MessageType.Sync);
+-		const syncMessageType = (0, y_protocols_sync.readSyncMessage)(message.decoder, message.encoder, provider.document, provider);
++		const position = message.decoder.pos;
++		const incomingType = (0, lib0_decoding.readVarUint)(message.decoder);
++		message.decoder.pos = position;
++		let syncMessageType;
++		if (provider.configuration.applyUpdate && (incomingType === y_protocols_sync.messageYjsSyncStep2 || incomingType === y_protocols_sync.messageYjsUpdate)) {
++			syncMessageType = (0, lib0_decoding.readVarUint)(message.decoder);
++			provider.configuration.applyUpdate({
++				document: provider.document,
++				origin: provider,
++				update: (0, lib0_decoding.readVarUint8Array)(message.decoder)
++			});
++		} else syncMessageType = (0, y_protocols_sync.readSyncMessage)(message.decoder, message.encoder, provider.document, provider);
+ 		if (emitSynced && syncMessageType === y_protocols_sync.messageYjsSyncStep2) provider.synced = true;
+ 	}
+ 	applySyncStatusMessage(provider, applied) {
+@@ -653,6 +698,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			awareness: void 0,
+ 			token: null,
+ 			sessionAwareness: false,
++			applyUpdate: null,
+ 			forceSyncInterval: false,
+ 			flushDelay: false,
+ 			onAuthenticated: () => null,
+@@ -669,7 +715,8 @@ var HocuspocusProvider = class extends EventEmitter {
  			onAwarenessUpdate: () => null,
  			onAwarenessChange: () => null,
  			onStateless: () => null,
@@ -62,7 +91,16 @@ index 95d5270..ea0452e 100644
  		};
  		this.isSynced = false;
  		this.unsyncedChanges = 0;
-@@ -704,6 +738,7 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -678,6 +725,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.manageSocket = false;
+ 		this._isAttached = false;
+ 		this.pendingUpdates = [];
++		this.unacknowledgedUpdates = [];
++		this.pendingSyncAcknowledgements = 0;
+ 		this.pendingAwarenessClients = /* @__PURE__ */ new Set();
+ 		this.flushTimeout = null;
+ 		this.sessionId = Math.random().toString(36).slice(2);
+@@ -704,6 +753,7 @@ var HocuspocusProvider = class extends EventEmitter {
  		this.on("awarenessChange", this.configuration.onAwarenessChange);
  		this.on("stateless", this.configuration.onStateless);
  		this.on("unsyncedChanges", this.configuration.onUnsyncedChanges);
@@ -70,7 +108,32 @@ index 95d5270..ea0452e 100644
  		this.on("authenticated", this.configuration.onAuthenticated);
  		this.on("authenticationFailed", this.configuration.onAuthenticationFailed);
  		this.awareness?.on("update", () => {
-@@ -804,6 +839,7 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -749,6 +799,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.emit("unsyncedChanges", { number: this.unsyncedChanges });
+ 	}
+ 	decrementUnsyncedChanges() {
++		if (this.pendingSyncAcknowledgements > 0) this.pendingSyncAcknowledgements -= 1;
++		else this.unacknowledgedUpdates.shift();
+ 		if (this.unsyncedChanges > 0) this.unsyncedChanges -= 1;
+ 		if (this.unsyncedChanges === 0) this.synced = true;
+ 		this.emit("unsyncedChanges", { number: this.unsyncedChanges });
+@@ -792,18 +844,21 @@ var HocuspocusProvider = class extends EventEmitter {
+ 	documentUpdateHandler(update, origin) {
+ 		if (origin === this) return;
+ 		if (!this.batchingEnabled) {
++			const retained = Uint8Array.from(update);
++			this.unacknowledgedUpdates.push(retained);
+ 			this.incrementUnsyncedChanges();
+ 			this.send(UpdateMessage, {
+-				update,
++				update: retained,
+ 				documentName: this.effectiveName
+ 			});
+ 			return;
+ 		}
+ 		if (this.pendingUpdates.length === 0) this.incrementUnsyncedChanges();
+-		this.pendingUpdates.push(update);
++		this.pendingUpdates.push(Uint8Array.from(update));
  		this.scheduleFlush();
  	}
  	awarenessUpdateHandler({ added, updated, removed }, origin) {
@@ -78,16 +141,31 @@ index 95d5270..ea0452e 100644
  		const changedClients = added.concat(updated).concat(removed);
  		if (!this.batchingEnabled) {
  			this.send(AwarenessMessage, {
-@@ -888,7 +924,8 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -837,6 +892,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		if (this.pendingUpdates.length > 0) {
+ 			const update = this.pendingUpdates.length === 1 ? this.pendingUpdates[0] : yjs.mergeUpdates(this.pendingUpdates);
+ 			this.pendingUpdates = [];
++			this.unacknowledgedUpdates.push(update);
+ 			this.send(UpdateMessage, {
+ 				update,
+ 				documentName: this.effectiveName
+@@ -888,16 +944,26 @@ var HocuspocusProvider = class extends EventEmitter {
  		return this.configuration.token;
  	}
  	startSync() {
 +		this.configuration.websocketProvider.resetDocumentSyncQueue(this.effectiveName);
  		this.resetUnsyncedChanges();
++		this.pendingSyncAcknowledgements = 1;
  		this.send(SyncStepOneMessage, {
  			document: this.document,
  			documentName: this.effectiveName
-@@ -898,6 +935,10 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		});
++		for (const update of this.unacknowledgedUpdates) {
++			this.incrementUnsyncedChanges();
++			this.send(UpdateMessage, { update, documentName: this.effectiveName });
++		}
+ 		if (this.awareness && this.awareness.getLocalState() !== null) this.send(AwarenessMessage, {
+ 			awareness: this.awareness,
  			clients: [this.document.clientID],
  			documentName: this.effectiveName
  		});
@@ -98,21 +176,38 @@ index 95d5270..ea0452e 100644
  	}
  	send(message, args) {
  		if (!this._isAttached) return;
-@@ -996,4 +1037,4 @@ exports.HocuspocusProvider = HocuspocusProvider;
- exports.HocuspocusProviderWebsocket = HocuspocusProviderWebsocket;
- exports.MessageType = MessageType;
- exports.WebSocketStatus = WebSocketStatus;
--//# sourceMappingURL=hocuspocus-provider.cjs.map
-\ No newline at end of file
-+//# sourceMappingURL=hocuspocus-provider.cjs.map
+@@ -922,7 +988,12 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			clearTimeout(this.flushTimeout);
+ 			this.flushTimeout = null;
+ 		}
+-		this.pendingUpdates = [];
++		if (this.pendingUpdates.length > 0) {
++			const update = this.pendingUpdates.length === 1 ? this.pendingUpdates[0] : yjs.mergeUpdates(this.pendingUpdates);
++			this.pendingUpdates = [];
++			this.unacknowledgedUpdates.push(update);
++		}
++		this.pendingSyncAcknowledgements = 0;
+ 		this.pendingAwarenessClients.clear();
+ 		if (this.awareness) (0, y_protocols_awareness.removeAwarenessStates)(this.awareness, Array.from(this.awareness.getStates().keys()).filter((client) => client !== this.document.clientID), this);
+ 	}
 diff --git a/dist/hocuspocus-provider.esm.js b/dist/hocuspocus-provider.esm.js
-index df0decb..6368049 100644
+index df0decb4bf6473facb450ba179c08d9918de2e3c..f5536199cb06c613e1f273d1889778de0937e384 100644
 --- a/dist/hocuspocus-provider.esm.js
 +++ b/dist/hocuspocus-provider.esm.js
-@@ -327,9 +327,16 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+@@ -8,7 +8,7 @@ import * as encoding from "lib0/encoding";
+ import { createEncoder, length, toUint8Array, writeVarString, writeVarUint, writeVarUint8Array } from "lib0/encoding";
+ import * as time from "lib0/time";
+ import * as syncProtocol from "y-protocols/sync";
+-import { messageYjsSyncStep2, readSyncMessage, writeUpdate } from "y-protocols/sync";
++import { messageYjsSyncStep2, messageYjsUpdate, readSyncMessage, writeUpdate } from "y-protocols/sync";
+ 
+ //#region packages/provider/src/EventEmitter.ts
+ var EventEmitter = class {
+@@ -327,9 +327,17 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
  			this.connectionAttempt = null;
  			this.status = WebSocketStatus.Connected;
  			this.emit("status", { status: WebSocketStatus.Connected });
++			this.cancelWebsocketRetry = void 0;
 +			for (const documentName of this.configuration.providerMap.keys()) this.resetDocumentSyncQueue(documentName);
  			this.emit("connect");
 +			const documentNames = new Set(this.messageQueue.flatMap((message) => {
@@ -126,7 +221,7 @@ index df0decb..6368049 100644
  		}
  	}
  	stopConnectionAttempt() {
-@@ -396,6 +403,32 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
+@@ -396,6 +404,32 @@ var HocuspocusProviderWebsocket = class HocuspocusProviderWebsocket extends Even
  			});
  		}
  		this.messageQueue.push(message);
@@ -159,7 +254,35 @@ index df0decb..6368049 100644
  	}
  	send(message) {
  		if (this.webSocket?.readyState === WsReadyStates.Open) this.webSocket.send(message);
-@@ -639,7 +672,8 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -468,7 +502,18 @@ var MessageReceiver = class {
+ 	applySyncMessage(provider, emitSynced) {
+ 		const { message } = this;
+ 		message.writeVarUint(MessageType.Sync);
+-		const syncMessageType = readSyncMessage(message.decoder, message.encoder, provider.document, provider);
++		const position = message.decoder.pos;
++		const incomingType = readVarUint(message.decoder);
++		message.decoder.pos = position;
++		let syncMessageType;
++		if (provider.configuration.applyUpdate && (incomingType === messageYjsSyncStep2 || incomingType === messageYjsUpdate)) {
++			syncMessageType = readVarUint(message.decoder);
++			provider.configuration.applyUpdate({
++				document: provider.document,
++				origin: provider,
++				update: readVarUint8Array(message.decoder)
++			});
++		} else syncMessageType = readSyncMessage(message.decoder, message.encoder, provider.document, provider);
+ 		if (emitSynced && syncMessageType === messageYjsSyncStep2) provider.synced = true;
+ 	}
+ 	applySyncStatusMessage(provider, applied) {
+@@ -623,6 +668,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			awareness: void 0,
+ 			token: null,
+ 			sessionAwareness: false,
++			applyUpdate: null,
+ 			forceSyncInterval: false,
+ 			flushDelay: false,
+ 			onAuthenticated: () => null,
+@@ -639,7 +685,8 @@ var HocuspocusProvider = class extends EventEmitter {
  			onAwarenessUpdate: () => null,
  			onAwarenessChange: () => null,
  			onStateless: () => null,
@@ -169,7 +292,16 @@ index df0decb..6368049 100644
  		};
  		this.isSynced = false;
  		this.unsyncedChanges = 0;
-@@ -674,6 +708,7 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -648,6 +695,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.manageSocket = false;
+ 		this._isAttached = false;
+ 		this.pendingUpdates = [];
++		this.unacknowledgedUpdates = [];
++		this.pendingSyncAcknowledgements = 0;
+ 		this.pendingAwarenessClients = /* @__PURE__ */ new Set();
+ 		this.flushTimeout = null;
+ 		this.sessionId = Math.random().toString(36).slice(2);
+@@ -674,6 +723,7 @@ var HocuspocusProvider = class extends EventEmitter {
  		this.on("awarenessChange", this.configuration.onAwarenessChange);
  		this.on("stateless", this.configuration.onStateless);
  		this.on("unsyncedChanges", this.configuration.onUnsyncedChanges);
@@ -177,7 +309,32 @@ index df0decb..6368049 100644
  		this.on("authenticated", this.configuration.onAuthenticated);
  		this.on("authenticationFailed", this.configuration.onAuthenticationFailed);
  		this.awareness?.on("update", () => {
-@@ -774,6 +809,7 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -719,6 +769,8 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		this.emit("unsyncedChanges", { number: this.unsyncedChanges });
+ 	}
+ 	decrementUnsyncedChanges() {
++		if (this.pendingSyncAcknowledgements > 0) this.pendingSyncAcknowledgements -= 1;
++		else this.unacknowledgedUpdates.shift();
+ 		if (this.unsyncedChanges > 0) this.unsyncedChanges -= 1;
+ 		if (this.unsyncedChanges === 0) this.synced = true;
+ 		this.emit("unsyncedChanges", { number: this.unsyncedChanges });
+@@ -762,18 +814,21 @@ var HocuspocusProvider = class extends EventEmitter {
+ 	documentUpdateHandler(update, origin) {
+ 		if (origin === this) return;
+ 		if (!this.batchingEnabled) {
++			const retained = Uint8Array.from(update);
++			this.unacknowledgedUpdates.push(retained);
+ 			this.incrementUnsyncedChanges();
+ 			this.send(UpdateMessage, {
+-				update,
++				update: retained,
+ 				documentName: this.effectiveName
+ 			});
+ 			return;
+ 		}
+ 		if (this.pendingUpdates.length === 0) this.incrementUnsyncedChanges();
+-		this.pendingUpdates.push(update);
++		this.pendingUpdates.push(Uint8Array.from(update));
  		this.scheduleFlush();
  	}
  	awarenessUpdateHandler({ added, updated, removed }, origin) {
@@ -185,16 +342,31 @@ index df0decb..6368049 100644
  		const changedClients = added.concat(updated).concat(removed);
  		if (!this.batchingEnabled) {
  			this.send(AwarenessMessage, {
-@@ -858,7 +894,8 @@ var HocuspocusProvider = class extends EventEmitter {
+@@ -807,6 +862,7 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		if (this.pendingUpdates.length > 0) {
+ 			const update = this.pendingUpdates.length === 1 ? this.pendingUpdates[0] : Y.mergeUpdates(this.pendingUpdates);
+ 			this.pendingUpdates = [];
++			this.unacknowledgedUpdates.push(update);
+ 			this.send(UpdateMessage, {
+ 				update,
+ 				documentName: this.effectiveName
+@@ -858,16 +914,26 @@ var HocuspocusProvider = class extends EventEmitter {
  		return this.configuration.token;
  	}
  	startSync() {
 +		this.configuration.websocketProvider.resetDocumentSyncQueue(this.effectiveName);
  		this.resetUnsyncedChanges();
++		this.pendingSyncAcknowledgements = 1;
  		this.send(SyncStepOneMessage, {
  			document: this.document,
  			documentName: this.effectiveName
-@@ -868,6 +905,10 @@ var HocuspocusProvider = class extends EventEmitter {
+ 		});
++		for (const update of this.unacknowledgedUpdates) {
++			this.incrementUnsyncedChanges();
++			this.send(UpdateMessage, { update, documentName: this.effectiveName });
++		}
+ 		if (this.awareness && this.awareness.getLocalState() !== null) this.send(AwarenessMessage, {
+ 			awareness: this.awareness,
  			clients: [this.document.clientID],
  			documentName: this.effectiveName
  		});
@@ -205,15 +377,22 @@ index df0decb..6368049 100644
  	}
  	send(message, args) {
  		if (!this._isAttached) return;
-@@ -962,4 +1003,4 @@ var HocuspocusProvider = class extends EventEmitter {
- 
- //#endregion
- export { AwarenessError, HocuspocusProvider, HocuspocusProviderWebsocket, MessageType, WebSocketStatus };
--//# sourceMappingURL=hocuspocus-provider.esm.js.map
-\ No newline at end of file
-+//# sourceMappingURL=hocuspocus-provider.esm.js.map
+@@ -892,7 +958,12 @@ var HocuspocusProvider = class extends EventEmitter {
+ 			clearTimeout(this.flushTimeout);
+ 			this.flushTimeout = null;
+ 		}
+-		this.pendingUpdates = [];
++		if (this.pendingUpdates.length > 0) {
++			const update = this.pendingUpdates.length === 1 ? this.pendingUpdates[0] : Y.mergeUpdates(this.pendingUpdates);
++			this.pendingUpdates = [];
++			this.unacknowledgedUpdates.push(update);
++		}
++		this.pendingSyncAcknowledgements = 0;
+ 		this.pendingAwarenessClients.clear();
+ 		if (this.awareness) removeAwarenessStates(this.awareness, Array.from(this.awareness.getStates().keys()).filter((client) => client !== this.document.clientID), this);
+ 	}
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 74ff44e..da59071 100644
+index 74ff44e248e35c9c353c39768a2e65ea38344c1c..6e0be641a3eb639984c9293cf95e1b3f7b2650f8 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -147,6 +147,10 @@ type onSyncedParameters = {
@@ -237,7 +416,23 @@ index 74ff44e..da59071 100644
    send(message: any): void;
    onClose({
      event
-@@ -366,6 +373,7 @@ interface CompleteHocuspocusProviderConfiguration {
+@@ -350,6 +357,15 @@ interface CompleteHocuspocusProviderConfiguration {
+    *
+    * Set to `false` (the default) to send every change immediately.
+    */
++  /**
++   * Applies incoming sync updates. Override when the supplied document uses a
++   * wire-compatible Yjs implementation that must own update decoding.
++   */
++  applyUpdate: ((input: {
++    document: Y.Doc;
++    origin: unknown;
++    update: Uint8Array;
++  }) => void) | null;
+   flushDelay: false | number;
+   onAuthenticated: (data: onAuthenticatedParameters) => void;
+   onAuthenticationFailed: (data: onAuthenticationFailedParameters) => void;
+@@ -366,6 +382,7 @@ interface CompleteHocuspocusProviderConfiguration {
    onAwarenessChange: (data: onAwarenessChangeParameters) => void;
    onStateless: (data: onStatelessParameters) => void;
    onUnsyncedChanges: (data: onUnsyncedChangesParameters) => void;
@@ -245,7 +440,18 @@ index 74ff44e..da59071 100644
  }
  declare class AwarenessError extends Error {
    code: number;
-@@ -467,4 +475,4 @@ declare class HocuspocusProvider extends EventEmitter {
+@@ -382,6 +399,10 @@ declare class HocuspocusProvider extends EventEmitter {
+    * Outgoing document updates buffered for the current `flushDelay` window.
+    */
+   private pendingUpdates;
++  /** Exact outbound batches retained until the server acknowledges them. */
++  private unacknowledgedUpdates;
++  /** Sync handshakes are acknowledged before replayed document updates. */
++  private pendingSyncAcknowledgements;
+   /**
+    * Awareness client ids whose latest state should be sent on the next flush.
+    */
+@@ -467,4 +488,4 @@ declare class HocuspocusProvider extends EventEmitter {
    setAwarenessField(key: string, value: any): void;
  }
  //#endregion
@@ -253,7 +459,7 @@ index 74ff44e..da59071 100644
 \ No newline at end of file
 +export { AuthorizedScope, AwarenessError, CompleteHocuspocusProviderConfiguration, CompleteHocuspocusProviderWebsocketConfiguration, Constructable, ConstructableOutgoingMessage, DocumentQueueState, HocusPocusWebSocket, HocuspocusProvider, HocuspocusProviderConfiguration, HocuspocusProviderWebsocket, HocuspocusProviderWebsocketConfiguration, HocuspocusWebSocket, MessageType, OutgoingMessageArguments, OutgoingMessageInterface, StatesArray, WebSocketStatus, onAuthenticatedParameters, onAuthenticationFailedParameters, onAwarenessChangeParameters, onAwarenessUpdateParameters, onCloseParameters, onDisconnectParameters, onMessageParameters, onOpenParameters, onOutgoingMessageParameters, onStatelessParameters, onStatusParameters, onSyncedParameters, onUnsyncedChangesParameters };
 diff --git a/src/HocuspocusProvider.ts b/src/HocuspocusProvider.ts
-index c855ea3..69fb273 100644
+index c855ea35ca0a0116f07090bbb692d422822e70da..fd72c028c78ea128fc58dfd6ea2308630c887afd 100644
 --- a/src/HocuspocusProvider.ts
 +++ b/src/HocuspocusProvider.ts
 @@ -32,6 +32,7 @@ import type {
@@ -264,7 +470,26 @@ index c855ea3..69fb273 100644
  } from "./types.ts";
  
  export type HocuspocusProviderConfiguration = Required<
-@@ -129,6 +130,7 @@ export interface CompleteHocuspocusProviderConfiguration {
+@@ -113,6 +114,18 @@ export interface CompleteHocuspocusProviderConfiguration {
+ 	 * Set to `false` (the default) to send every change immediately.
+ 	 */
+ 	flushDelay: false | number;
++	/**
++	 * Applies incoming sync updates. Override when the supplied document uses a
++	 * wire-compatible Yjs implementation that must own update decoding.
++	 */
++	applyUpdate:
++		| ((input: {
++				document: Y.Doc;
++				origin: unknown;
++				update: Uint8Array;
++		  }) => void)
++		| null;
++
+ 
+ 	onAuthenticated: (data: onAuthenticatedParameters) => void;
+ 	onAuthenticationFailed: (data: onAuthenticationFailedParameters) => void;
+@@ -129,6 +142,7 @@ export interface CompleteHocuspocusProviderConfiguration {
  	onAwarenessChange: (data: onAwarenessChangeParameters) => void;
  	onStateless: (data: onStatelessParameters) => void;
  	onUnsyncedChanges: (data: onUnsyncedChangesParameters) => void;
@@ -272,7 +497,15 @@ index c855ea3..69fb273 100644
  }
  
  export class AwarenessError extends Error {
-@@ -161,6 +163,7 @@ export class HocuspocusProvider extends EventEmitter {
+@@ -145,6 +159,7 @@ export class HocuspocusProvider extends EventEmitter {
+ 		token: null,
+ 		sessionAwareness: false,
+ 		forceSyncInterval: false,
++		applyUpdate: null,
+ 		flushDelay: false,
+ 		onAuthenticated: () => null,
+ 		onAuthenticationFailed: () => null,
+@@ -161,6 +176,7 @@ export class HocuspocusProvider extends EventEmitter {
  		onAwarenessChange: () => null,
  		onStateless: () => null,
  		onUnsyncedChanges: () => null,
@@ -280,7 +513,20 @@ index c855ea3..69fb273 100644
  	};
  
  	isSynced = false;
-@@ -230,6 +233,10 @@ export class HocuspocusProvider extends EventEmitter {
+@@ -181,6 +197,12 @@ export class HocuspocusProvider extends EventEmitter {
+ 	 */
+ 	private pendingUpdates: Uint8Array[] = [];
+ 
++	/** Exact outbound batches retained until the server acknowledges them. */
++	private unacknowledgedUpdates: Uint8Array[] = [];
++
++	/** Sync handshakes are acknowledged before replayed document updates. */
++	private pendingSyncAcknowledgements = 0;
++
+ 	/**
+ 	 * Awareness client ids whose latest state should be sent on the next flush.
+ 	 */
+@@ -230,6 +252,10 @@ export class HocuspocusProvider extends EventEmitter {
  		this.on("awarenessChange", this.configuration.onAwarenessChange);
  		this.on("stateless", this.configuration.onStateless);
  		this.on("unsyncedChanges", this.configuration.onUnsyncedChanges);
@@ -291,7 +537,40 @@ index c855ea3..69fb273 100644
  
  		this.on("authenticated", this.configuration.onAuthenticated);
  		this.on("authenticationFailed", this.configuration.onAuthenticationFailed);
-@@ -417,6 +424,10 @@ export class HocuspocusProvider extends EventEmitter {
+@@ -326,6 +352,11 @@ export class HocuspocusProvider extends EventEmitter {
+ 	}
+ 
+ 	decrementUnsyncedChanges() {
++		if (this.pendingSyncAcknowledgements > 0) {
++			this.pendingSyncAcknowledgements -= 1;
++		} else {
++			this.unacknowledgedUpdates.shift();
++		}
+ 		if (this.unsyncedChanges > 0) {
+ 			this.unsyncedChanges -= 1;
+ 		}
+@@ -401,8 +432,13 @@ export class HocuspocusProvider extends EventEmitter {
+ 		}
+ 
+ 		if (!this.batchingEnabled) {
++			const retained = Uint8Array.from(update);
++			this.unacknowledgedUpdates.push(retained);
+ 			this.incrementUnsyncedChanges();
+-			this.send(UpdateMessage, { update, documentName: this.effectiveName });
++			this.send(UpdateMessage, {
++				update: retained,
++				documentName: this.effectiveName,
++			});
+ 			return;
+ 		}
+ 
+@@ -412,11 +448,15 @@ export class HocuspocusProvider extends EventEmitter {
+ 			this.incrementUnsyncedChanges();
+ 		}
+ 
+-		this.pendingUpdates.push(update);
++		this.pendingUpdates.push(Uint8Array.from(update));
+ 		this.scheduleFlush();
  	}
  
  	awarenessUpdateHandler({ added, updated, removed }: any, origin: any) {
@@ -302,7 +581,15 @@ index c855ea3..69fb273 100644
  		const changedClients = added.concat(updated).concat(removed);
  
  		if (!this.batchingEnabled) {
-@@ -548,7 +559,10 @@ export class HocuspocusProvider extends EventEmitter {
+@@ -468,6 +508,7 @@ export class HocuspocusProvider extends EventEmitter {
+ 					: Y.mergeUpdates(this.pendingUpdates);
+ 
+ 			this.pendingUpdates = [];
++			this.unacknowledgedUpdates.push(update);
+ 			this.send(UpdateMessage, { update, documentName: this.effectiveName });
+ 		}
+ 
+@@ -548,13 +589,22 @@ export class HocuspocusProvider extends EventEmitter {
  	}
  
  	startSync() {
@@ -310,10 +597,22 @@ index c855ea3..69fb273 100644
 +			this.effectiveName,
 +		);
  		this.resetUnsyncedChanges();
++		this.pendingSyncAcknowledgements = 1;
  
  		this.send(SyncStepOneMessage, {
  			document: this.document,
-@@ -562,6 +578,14 @@ export class HocuspocusProvider extends EventEmitter {
+ 			documentName: this.effectiveName,
+ 		});
+ 
++		for (const update of this.unacknowledgedUpdates) {
++			this.incrementUnsyncedChanges();
++			this.send(UpdateMessage, { update, documentName: this.effectiveName });
++		}
++
+ 		if (this.awareness && this.awareness.getLocalState() !== null) {
+ 			this.send(AwarenessMessage, {
+ 				awareness: this.awareness,
+@@ -562,6 +612,14 @@ export class HocuspocusProvider extends EventEmitter {
  				documentName: this.effectiveName,
  			});
  		}
@@ -328,14 +627,39 @@ index c855ea3..69fb273 100644
  	}
  
  	send(message: ConstructableOutgoingMessage, args: any) {
+@@ -591,13 +649,20 @@ export class HocuspocusProvider extends EventEmitter {
+ 		this.isAuthenticated = false;
+ 		this.synced = false;
+ 
+-		// Drop anything buffered for batching; the reconnect sync handshake will
+-		// reconcile these changes from the document via state vectors.
++		// Preserve an incomplete batch so reconnect can replay its exact bytes.
+ 		if (this.flushTimeout !== null) {
+ 			clearTimeout(this.flushTimeout);
+ 			this.flushTimeout = null;
+ 		}
+-		this.pendingUpdates = [];
++		if (this.pendingUpdates.length > 0) {
++			const update =
++				this.pendingUpdates.length === 1
++					? this.pendingUpdates[0]
++					: Y.mergeUpdates(this.pendingUpdates);
++			this.pendingUpdates = [];
++			this.unacknowledgedUpdates.push(update);
++		}
++		this.pendingSyncAcknowledgements = 0;
+ 		this.pendingAwarenessClients.clear();
+ 
+ 		// update awareness (all users except local left)
 diff --git a/src/HocuspocusProviderWebsocket.ts b/src/HocuspocusProviderWebsocket.ts
-index 770670c..167b45b 100644
+index 770670c06bcd41e5d5941e5ceeb97cecdb933961..ea19f3e922e32fb9cbc7a556d81bf7b42e860e0d 100644
 --- a/src/HocuspocusProviderWebsocket.ts
 +++ b/src/HocuspocusProviderWebsocket.ts
-@@ -428,9 +428,22 @@ export class HocuspocusProviderWebsocket extends EventEmitter {
+@@ -428,9 +428,23 @@ export class HocuspocusProviderWebsocket extends EventEmitter {
  
  			this.status = WebSocketStatus.Connected;
  			this.emit("status", { status: WebSocketStatus.Connected });
++			this.cancelWebsocketRetry = undefined;
 +			for (const documentName of this.configuration.providerMap.keys()) {
 +				this.resetDocumentSyncQueue(documentName);
 +			}
@@ -355,7 +679,7 @@ index 770670c..167b45b 100644
  		}
  	}
  
-@@ -548,6 +561,41 @@ export class HocuspocusProviderWebsocket extends EventEmitter {
+@@ -548,6 +562,41 @@ export class HocuspocusProviderWebsocket extends EventEmitter {
  			}
  		}
  		this.messageQueue.push(message);
@@ -397,44 +721,12 @@ index 770670c..167b45b 100644
  	}
  
  	send(message: any) {
-diff --git a/src/types.ts b/src/types.ts
-index a381321..cbab36f 100644
---- a/src/types.ts
-+++ b/src/types.ts
-@@ -93,6 +93,11 @@ export type onUnsyncedChangesParameters = {
- 	number: number;
- };
- 
-+export type DocumentQueueState = Readonly<{
-+	queuedUpdates: number;
-+	unsyncedChanges: number;
-+}>;
-+
- export type onDisconnectParameters = {
- 	event: CloseEvent;
- };
-diff --git a/src/HocuspocusProvider.ts b/src/HocuspocusProvider.ts
---- a/src/HocuspocusProvider.ts
-+++ b/src/HocuspocusProvider.ts
-@@ -117,0 +118,12 @@
-+	/**
-+	 * Applies incoming sync updates. Override when the supplied document uses a
-+	 * wire-compatible Yjs implementation that must own update decoding.
-+	 */
-+	applyUpdate:
-+		| ((input: {
-+				document: Y.Doc;
-+				origin: unknown;
-+				update: Uint8Array;
-+		  }) => void)
-+		| null;
-+
-@@ -150,0 +163 @@
-+		applyUpdate: null,
 diff --git a/src/MessageReceiver.ts b/src/MessageReceiver.ts
+index 7942a7af70b2954372414a072230d2e9901a0804..51b4e12ae6a5513c9f87f66be1d99519d2833e61 100644
 --- a/src/MessageReceiver.ts
 +++ b/src/MessageReceiver.ts
-@@ -2 +2,6 @@
+@@ -1,7 +1,16 @@
+ import { type CloseEvent, readAuthMessage } from "@hocuspocus/common";
 -import { readVarInt, readVarString } from "lib0/decoding";
 +import {
 +	readVarInt,
@@ -442,14 +734,20 @@ diff --git a/src/MessageReceiver.ts b/src/MessageReceiver.ts
 +	readVarUint,
 +	readVarUint8Array,
 +} from "lib0/decoding";
-@@ -4 +9,5 @@
+ import * as awarenessProtocol from "y-protocols/awareness";
 -import { messageYjsSyncStep2, readSyncMessage } from "y-protocols/sync";
 +import {
 +	messageYjsSyncStep2,
 +	messageYjsUpdate,
 +	readSyncMessage,
 +} from "y-protocols/sync";
-@@ -80,7 +89,24 @@
+ import type { HocuspocusProvider } from "./HocuspocusProvider.ts";
+ import type { IncomingMessage } from "./IncomingMessage.ts";
+ import { OutgoingMessage } from "./OutgoingMessage.ts";
+@@ -77,13 +86,30 @@ export class MessageReceiver {
+ 
+ 		message.writeVarUint(MessageType.Sync);
+ 
 -		// Apply update
 -		const syncMessageType = readSyncMessage(
 -			message.decoder,
@@ -481,57 +779,22 @@ diff --git a/src/MessageReceiver.ts b/src/MessageReceiver.ts
 +				provider,
 +			);
 +		}
-diff --git a/dist/index.d.ts b/dist/index.d.ts
---- a/dist/index.d.ts
-+++ b/dist/index.d.ts
-@@ -360,0 +361,9 @@
-+  /**
-+   * Applies incoming sync updates. Override when the supplied document uses a
-+   * wire-compatible Yjs implementation that must own update decoding.
-+   */
-+  applyUpdate: ((input: {
-+    document: Y.Doc;
-+    origin: unknown;
-+    update: Uint8Array;
-+  }) => void) | null;
-diff --git a/dist/hocuspocus-provider.esm.js b/dist/hocuspocus-provider.esm.js
---- a/dist/hocuspocus-provider.esm.js
-+++ b/dist/hocuspocus-provider.esm.js
-@@ -11 +11 @@
--import { messageYjsSyncStep2, readSyncMessage, writeUpdate } from "y-protocols/sync";
-+import { messageYjsSyncStep2, messageYjsUpdate, readSyncMessage, writeUpdate } from "y-protocols/sync";
-@@ -504 +504,12 @@
--		const syncMessageType = readSyncMessage(message.decoder, message.encoder, provider.document, provider);
-+		const position = message.decoder.pos;
-+		const incomingType = readVarUint(message.decoder);
-+		message.decoder.pos = position;
-+		let syncMessageType;
-+		if (provider.configuration.applyUpdate && (incomingType === messageYjsSyncStep2 || incomingType === messageYjsUpdate)) {
-+			syncMessageType = readVarUint(message.decoder);
-+			provider.configuration.applyUpdate({
-+				document: provider.document,
-+				origin: provider,
-+				update: readVarUint8Array(message.decoder)
-+			});
-+		} else syncMessageType = readSyncMessage(message.decoder, message.encoder, provider.document, provider);
-@@ -660,0 +672 @@
-+			applyUpdate: null,
-diff --git a/dist/hocuspocus-provider.cjs b/dist/hocuspocus-provider.cjs
---- a/dist/hocuspocus-provider.cjs
-+++ b/dist/hocuspocus-provider.cjs
-@@ -534 +534,12 @@
--		const syncMessageType = (0, y_protocols_sync.readSyncMessage)(message.decoder, message.encoder, provider.document, provider);
-+		const position = message.decoder.pos;
-+		const incomingType = (0, lib0_decoding.readVarUint)(message.decoder);
-+		message.decoder.pos = position;
-+		let syncMessageType;
-+		if (provider.configuration.applyUpdate && (incomingType === y_protocols_sync.messageYjsSyncStep2 || incomingType === y_protocols_sync.messageYjsUpdate)) {
-+			syncMessageType = (0, lib0_decoding.readVarUint)(message.decoder);
-+			provider.configuration.applyUpdate({
-+				document: provider.document,
-+				origin: provider,
-+				update: (0, lib0_decoding.readVarUint8Array)(message.decoder)
-+			});
-+		} else syncMessageType = (0, y_protocols_sync.readSyncMessage)(message.decoder, message.encoder, provider.document, provider);
-@@ -690,0 +702 @@
-+			applyUpdate: null,
+ 
+ 		// Synced once we receive Step2
+ 		if (emitSynced && syncMessageType === messageYjsSyncStep2) {
+diff --git a/src/types.ts b/src/types.ts
+index a381321ae45adaf53296b586bc4865f6e0cce8a8..cbab36fd1c36e95251ac82e88b5756a7f812a9b5 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -93,6 +93,11 @@ export type onUnsyncedChangesParameters = {
+ 	number: number;
+ };
+ 
++export type DocumentQueueState = Readonly<{
++	queuedUpdates: number;
++	unsyncedChanges: number;
++}>;
++
+ export type onDisconnectParameters = {
+ 	event: CloseEvent;
+ };

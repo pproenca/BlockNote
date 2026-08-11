@@ -64,6 +64,21 @@ export async function createIndexedDbRecoveryStore(
       await complete(transaction);
       return true;
     },
+    async deleteActive(key, generation) {
+      const transaction = database.transaction(ACTIVE, "readwrite");
+      const store = transaction.objectStore(ACTIVE);
+      const current = (await request(store.get(key))) as
+        | BlockNoteCacheRecord
+        | undefined;
+      if (!current || current.generation !== generation) {
+        transaction.abort();
+        await complete(transaction).catch(() => undefined);
+        return false;
+      }
+      store.delete(key);
+      await complete(transaction);
+      return true;
+    },
     loadRecovery: (key) => read<BlockNoteRecoveryRecord>(RECOVERY, key),
     async archive(record) {
       const transaction = database.transaction(RECOVERY, "readwrite");

@@ -198,6 +198,28 @@ describe("offline recovery", () => {
     );
   });
 
+  it("discards active and future cache state after access revocation", async () => {
+    const store = createMemoryRecoveryStore();
+    const document = documentHarness();
+    const controller = createRecoveryController({
+      key: "cache",
+      generation: 1,
+      store,
+      document: document.adapter,
+      durability: vi.fn(),
+      recoveryAvailable: vi.fn(),
+    });
+    await controller.start();
+    document.change(Uint8Array.of(8));
+
+    await controller.invalidate();
+    document.change(Uint8Array.of(9));
+    await controller.destroy();
+
+    expect(await store.loadActive("cache")).toBeNull();
+    expect(await store.loadRecovery("cache")).toBeNull();
+  });
+
   it("merges cache and live state so a stale bootstrap cannot replace live", () => {
     const bootstrap = new Y.Doc();
     bootstrap.get("content").insert(0, "abc");

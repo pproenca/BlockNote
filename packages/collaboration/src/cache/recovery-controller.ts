@@ -31,6 +31,7 @@ export function createRecoveryController(input: {
   let queue = Promise.resolve();
   let writeError: unknown;
   let stopDocument: (() => void) | null = null;
+  let invalidated = false;
   let destroyed = false;
   let destroyPromise: Promise<void> | null = null;
 
@@ -58,6 +59,7 @@ export function createRecoveryController(input: {
   };
 
   const persist = (bytes: Uint8Array) => {
+    if (invalidated) return;
     latestPending = Uint8Array.from(bytes);
     input.durability("pending");
     writeError = undefined;
@@ -95,6 +97,7 @@ export function createRecoveryController(input: {
         writeError = undefined;
       })
       .catch(async (cause) => {
+        if (invalidated) return;
         writeError = cause;
         input.durability("error");
         await archivePending("write-error").catch(() => undefined);
@@ -163,6 +166,19 @@ export function createRecoveryController(input: {
       recovery = null;
       return discarded ? summary(current) : null;
     },
+    async invalidate() {
+      if (invalidated) return;
+      invalidated = true;
+      stopDocument?.();
+      stopDocument = null;
+      latestPending = null;
+      await queue;
+      await Promise.all([
+        input.store.deleteActive(input.key, input.generation),
+        input.store.deleteRecovery(input.key, input.generation),
+      ]);
+      recovery = null;
+    },
     destroy() {
       if (destroyPromise) {
         return destroyPromise;
@@ -171,7 +187,7 @@ export function createRecoveryController(input: {
         stopDocument?.();
         stopDocument = null;
         await queue;
-        if (latestPending) {
+        if (latestPending && !invalidated) {
           await archivePending("pending");
         }
         destroyed = true;
