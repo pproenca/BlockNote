@@ -2,6 +2,7 @@ import {
   HocuspocusProvider,
   HocuspocusProviderWebsocket,
 } from "@hocuspocus/provider";
+import * as Y from "@y/y";
 
 export interface BlockNoteProviderSignals {
   readonly status: (
@@ -41,6 +42,9 @@ export function createHocuspocusProviderAdapter(input: {
       >[0]["document"],
       websocketProvider: websocket,
       token: input.credentials,
+      applyUpdate({ document, origin, update }) {
+        Y.applyUpdate(document as unknown as Y.Doc, update, origin);
+      },
       onStatus({ status }) {
         input.signals.status(
           status === "connected"

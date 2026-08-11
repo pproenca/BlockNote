@@ -413,3 +413,125 @@ index a381321..cbab36f 100644
  export type onDisconnectParameters = {
  	event: CloseEvent;
  };
+diff --git a/src/HocuspocusProvider.ts b/src/HocuspocusProvider.ts
+--- a/src/HocuspocusProvider.ts
++++ b/src/HocuspocusProvider.ts
+@@ -117,0 +118,12 @@
++	/**
++	 * Applies incoming sync updates. Override when the supplied document uses a
++	 * wire-compatible Yjs implementation that must own update decoding.
++	 */
++	applyUpdate:
++		| ((input: {
++				document: Y.Doc;
++				origin: unknown;
++				update: Uint8Array;
++		  }) => void)
++		| null;
++
+@@ -150,0 +163 @@
++		applyUpdate: null,
+diff --git a/src/MessageReceiver.ts b/src/MessageReceiver.ts
+--- a/src/MessageReceiver.ts
++++ b/src/MessageReceiver.ts
+@@ -2 +2,6 @@
+-import { readVarInt, readVarString } from "lib0/decoding";
++import {
++	readVarInt,
++	readVarString,
++	readVarUint,
++	readVarUint8Array,
++} from "lib0/decoding";
+@@ -4 +9,5 @@
+-import { messageYjsSyncStep2, readSyncMessage } from "y-protocols/sync";
++import {
++	messageYjsSyncStep2,
++	messageYjsUpdate,
++	readSyncMessage,
++} from "y-protocols/sync";
+@@ -80,7 +89,24 @@
+-		// Apply update
+-		const syncMessageType = readSyncMessage(
+-			message.decoder,
+-			message.encoder,
+-			provider.document,
+-			provider,
+-		);
++		const position = message.decoder.pos;
++		const incomingType = readVarUint(message.decoder);
++		message.decoder.pos = position;
++		let syncMessageType: number;
++
++		if (
++			provider.configuration.applyUpdate &&
++			(incomingType === messageYjsSyncStep2 ||
++				incomingType === messageYjsUpdate)
++		) {
++			syncMessageType = readVarUint(message.decoder);
++			provider.configuration.applyUpdate({
++				document: provider.document,
++				origin: provider,
++				update: readVarUint8Array(message.decoder),
++			});
++		} else {
++			syncMessageType = readSyncMessage(
++				message.decoder,
++				message.encoder,
++				provider.document,
++				provider,
++			);
++		}
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -360,0 +361,9 @@
++  /**
++   * Applies incoming sync updates. Override when the supplied document uses a
++   * wire-compatible Yjs implementation that must own update decoding.
++   */
++  applyUpdate: ((input: {
++    document: Y.Doc;
++    origin: unknown;
++    update: Uint8Array;
++  }) => void) | null;
+diff --git a/dist/hocuspocus-provider.esm.js b/dist/hocuspocus-provider.esm.js
+--- a/dist/hocuspocus-provider.esm.js
++++ b/dist/hocuspocus-provider.esm.js
+@@ -11 +11 @@
+-import { messageYjsSyncStep2, readSyncMessage, writeUpdate } from "y-protocols/sync";
++import { messageYjsSyncStep2, messageYjsUpdate, readSyncMessage, writeUpdate } from "y-protocols/sync";
+@@ -504 +504,12 @@
+-		const syncMessageType = readSyncMessage(message.decoder, message.encoder, provider.document, provider);
++		const position = message.decoder.pos;
++		const incomingType = readVarUint(message.decoder);
++		message.decoder.pos = position;
++		let syncMessageType;
++		if (provider.configuration.applyUpdate && (incomingType === messageYjsSyncStep2 || incomingType === messageYjsUpdate)) {
++			syncMessageType = readVarUint(message.decoder);
++			provider.configuration.applyUpdate({
++				document: provider.document,
++				origin: provider,
++				update: readVarUint8Array(message.decoder)
++			});
++		} else syncMessageType = readSyncMessage(message.decoder, message.encoder, provider.document, provider);
+@@ -660,0 +672 @@
++			applyUpdate: null,
+diff --git a/dist/hocuspocus-provider.cjs b/dist/hocuspocus-provider.cjs
+--- a/dist/hocuspocus-provider.cjs
++++ b/dist/hocuspocus-provider.cjs
+@@ -534 +534,12 @@
+-		const syncMessageType = (0, y_protocols_sync.readSyncMessage)(message.decoder, message.encoder, provider.document, provider);
++		const position = message.decoder.pos;
++		const incomingType = (0, lib0_decoding.readVarUint)(message.decoder);
++		message.decoder.pos = position;
++		let syncMessageType;
++		if (provider.configuration.applyUpdate && (incomingType === y_protocols_sync.messageYjsSyncStep2 || incomingType === y_protocols_sync.messageYjsUpdate)) {
++			syncMessageType = (0, lib0_decoding.readVarUint)(message.decoder);
++			provider.configuration.applyUpdate({
++				document: provider.document,
++				origin: provider,
++				update: (0, lib0_decoding.readVarUint8Array)(message.decoder)
++			});
++		} else syncMessageType = (0, y_protocols_sync.readSyncMessage)(message.decoder, message.encoder, provider.document, provider);
+@@ -690,0 +702 @@
++			applyUpdate: null,

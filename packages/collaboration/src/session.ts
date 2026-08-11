@@ -14,6 +14,7 @@ import {
   createYCommentAnchorMapping,
   withCollaboration,
 } from "@blocknote/core/y";
+import type { Awareness } from "@y/protocols/awareness";
 import * as Y from "@y/y";
 
 import { blockNoteCacheKey } from "./cache/cache-key.js";
@@ -60,6 +61,7 @@ interface SessionDependencies {
   readonly createEditor: (
     input: BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>,
     doc: unknown,
+    awareness: unknown,
   ) => unknown;
   readonly createProvider: (input: {
     readonly document: unknown;
@@ -86,7 +88,7 @@ interface SessionDependencies {
 
 const defaultDependencies: SessionDependencies = {
   createDocument: () => new Y.Doc({ gc: false }),
-  createEditor(input, doc) {
+  createEditor(input, doc, awareness) {
     const document = doc as Y.Doc;
     const configured = withCollaboration({
       schema: input.document.schema,
@@ -97,6 +99,7 @@ const defaultDependencies: SessionDependencies = {
       collaboration: {
         fragment: document.get("prosemirror"),
         user: input.collaboration.user,
+        provider: { awareness: awareness as Awareness },
       },
     });
     const editor = BlockNoteEditor.create(configured) as BlockNoteEditorFor<
@@ -360,24 +363,6 @@ export async function createBlockNoteSessionWithDependencies<
       publish({ access });
     });
     publish({ access: options.access.get() });
-    editor = dependencies.createEditor(
-      runtimeOptions,
-      doc,
-    ) as unknown as BlockNoteEditorFor<Document>;
-    editor.isEditable = canMutate(state.access);
-    stopBeforeChange = editor.onBeforeChange(({ tr }) => {
-      if (
-        !tr.docChanged ||
-        tr.getMeta("y-sync-transaction") ||
-        tr.getMeta("y-sync-append")
-      ) {
-        return true;
-      }
-      const access = options.access.get();
-      if (canMutate(access)) return true;
-      events.emit("accessRejected", { action: "edit", access });
-      return false;
-    });
     const signals = {
       status(connection: "connecting" | "online" | "offline" | "degraded") {
         publish({ connection });
@@ -399,6 +384,25 @@ export async function createBlockNoteSessionWithDependencies<
       options:
         options as BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>,
       signals,
+    });
+    editor = dependencies.createEditor(
+      runtimeOptions,
+      doc,
+      provider.awareness(),
+    ) as unknown as BlockNoteEditorFor<Document>;
+    editor.isEditable = canMutate(state.access);
+    stopBeforeChange = editor.onBeforeChange(({ tr }) => {
+      if (
+        !tr.docChanged ||
+        tr.getMeta("y-sync-transaction") ||
+        tr.getMeta("y-sync-append")
+      ) {
+        return true;
+      }
+      const access = options.access.get();
+      if (canMutate(access)) return true;
+      events.emit("accessRejected", { action: "edit", access });
+      return false;
     });
     publish({ phase: "ready", readiness: "local" });
     provider.connect();

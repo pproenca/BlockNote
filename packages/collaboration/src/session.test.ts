@@ -74,6 +74,8 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
   let editorInput:
     | BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>
     | undefined;
+  const providerAwareness = {};
+  let editorAwareness: unknown;
   const fakeEditor = {
     isEditable: true,
     onBeforeChange: vi.fn(() => vi.fn()),
@@ -83,15 +85,18 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
     createDocument: () => new Y.Doc({ gc: false }),
     createEditor: (
       input: BlockNoteSessionOptions<AnyBlockNoteDocumentDefinition>,
+      _document: unknown,
+      awareness: unknown,
     ) => {
       editorInput = input;
+      editorAwareness = awareness;
       return fakeEditor;
     },
     createProvider: (input: { signals: BlockNoteProviderSignals }) => {
       signals = input.signals;
       if (overrides.providerFailure) throw overrides.providerFailure;
       return {
-        awareness: () => null,
+        awareness: () => providerAwareness,
         connect,
         destroy: providerDestroy,
       };
@@ -114,6 +119,10 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
       },
     },
     providerDestroy,
+    providerAwareness,
+    get editorAwareness() {
+      return editorAwareness;
+    },
     get editorInput() {
       return editorInput;
     },
@@ -124,6 +133,17 @@ function harness(overrides: { readonly providerFailure?: Error } = {}) {
 }
 
 describe("createBlockNoteSession", () => {
+  it("binds provider awareness before creating the editor", async () => {
+    const fixture = harness();
+
+    await createBlockNoteSessionWithDependencies(
+      fixture.options,
+      fixture.dependencies,
+    );
+
+    expect(fixture.editorAwareness).toBe(fixture.providerAwareness);
+  });
+
   it("publishes deterministic local/live and reconnect states", async () => {
     const fixture = harness();
     const observed: string[] = [];
@@ -248,7 +268,7 @@ describe("createBlockNoteSession", () => {
         partial.dependencies,
       ),
     ).rejects.toMatchObject({ code: "offline-unavailable" });
-    expect(partial.editorDestroy).toHaveBeenCalledTimes(1);
+    expect(partial.editorDestroy).not.toHaveBeenCalled();
   });
 
   it("preserves external comment stores while adding session services", async () => {

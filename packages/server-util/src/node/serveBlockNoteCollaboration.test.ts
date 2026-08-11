@@ -157,6 +157,10 @@ describe("serveBlockNoteCollaboration", () => {
     await vi.waitFor(() => {
       expect(right.get("content").toString()).toBe("authoritative");
     });
+    left.get("content").insert(left.get("content").length, " live");
+    await vi.waitFor(() => {
+      expect(right.get("content").toString()).toBe("authoritative live");
+    });
     stopRight();
     stopLeft();
     await firstServer.stop();
@@ -171,7 +175,7 @@ describe("serveBlockNoteCollaboration", () => {
       `ws://${restarted.address.host}:${restarted.address.port}`,
       restored,
     );
-    expect(restored.get("content").toString()).toBe("authoritative");
+    expect(restored.get("content").toString()).toBe("authoritative live");
     stopRestored();
     await restarted.stop();
     left.destroy();

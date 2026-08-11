@@ -1,13 +1,14 @@
 import type { BlockNoteCollaboration } from "@blocknote/collaboration-server";
 import { getBlockNoteCollaborationInternals } from "@blocknote/collaboration-server/internal";
 import {
-  type Document,
+  type Connection,
+  OutgoingMessage,
   Server,
   isTransactionOrigin,
+  type connectedPayload,
   type onConnectPayload,
   type onDisconnectPayload,
 } from "@hocuspocus/server";
-import { applyUpdate } from "yjs";
 
 export interface BlockNoteLogger {
   debug(message: string, context?: Readonly<Record<string, unknown>>): void;
@@ -25,7 +26,24 @@ type Context = {
   runtimeConnection?: Awaited<
     ReturnType<ReturnType<typeof getBlockNoteCollaborationInternals>["connect"]>
   >;
+  transport?: {
+    connection?: Connection<Context>;
+    pending: Uint8Array[];
+  };
 };
+
+function sendUpdate(
+  connection: Connection<Context>,
+  documentName: string,
+  update: Uint8Array,
+) {
+  connection.send(
+    new OutgoingMessage(documentName)
+      .createSyncMessage()
+      .writeUpdate(update)
+      .toUint8Array(),
+  );
+}
 
 export async function serveBlockNoteCollaboration<TKey>(options: {
   readonly collaboration: BlockNoteCollaboration<TKey>;
@@ -35,7 +53,6 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
   readonly signals?: readonly NodeJS.Signals[];
 }): Promise<BlockNoteCollaborationServer> {
   const runtime = getBlockNoteCollaborationInternals(options.collaboration);
-  const documents = new Map<string, Document>();
   const transportScopes = new Map<string, object>();
   const awarenessEncoder = new TextEncoder();
   const signalHandlers = new Map<NodeJS.Signals, () => void>();
@@ -46,14 +63,16 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
     quiet: true,
     stopOnSignals: false,
     async onConnect(payload: onConnectPayload<Context>) {
+      const transport: NonNullable<Context["transport"]> = { pending: [] };
       const runtimeConnection = await runtime.connect({
         id: payload.socketId,
         request: payload.request,
         documentName: payload.documentName,
         send: ({ update }) => {
-          const document = documents.get(payload.documentName);
-          if (document) {
-            applyUpdate(document, update, runtime);
+          if (transport.connection) {
+            sendUpdate(transport.connection, payload.documentName, update);
+          } else {
+            transport.pending.push(Uint8Array.from(update));
           }
         },
       });
@@ -71,16 +90,13 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
         payload.documentName,
         runtimeConnection.transportScope,
       );
-      return { runtimeConnection };
+      return { runtimeConnection, transport };
     },
     async onLoadDocument(payload) {
       const connection = payload.context?.runtimeConnection;
       if (!connection) {
         throw new Error("BlockNote collaboration connection is unavailable.");
       }
-      const snapshot = await runtime.snapshot(connection);
-      applyUpdate(payload.document, snapshot.update, runtime);
-      documents.set(payload.documentName, payload.document);
       payload.document.setApplyUpdateHandler(
         async ({ transactionOrigin, update }) => {
           if (
@@ -98,6 +114,19 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
         },
       );
     },
+    async connected(payload: connectedPayload<Context>) {
+      const runtimeConnection = payload.context.runtimeConnection;
+      const transport = payload.context.transport;
+      if (!runtimeConnection || !transport) {
+        throw new Error("BlockNote collaboration connection is unavailable.");
+      }
+      const snapshot = await runtime.snapshot(runtimeConnection);
+      sendUpdate(payload.connection, payload.documentName, snapshot.update);
+      transport.connection = payload.connection;
+      for (const update of transport.pending.splice(0)) {
+        sendUpdate(payload.connection, payload.documentName, update);
+      }
+    },
     async beforeHandleAwareness(payload) {
       const connection = payload.context?.runtimeConnection;
       if (!connection) {
@@ -111,10 +140,11 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
         );
       }
     },
-    async afterUnloadDocument(payload) {
-      documents.delete(payload.documentName);
-    },
     async onDisconnect(payload: onDisconnectPayload<Context>) {
+      if (payload.context.transport) {
+        payload.context.transport.connection = undefined;
+        payload.context.transport.pending.length = 0;
+      }
       if (payload.context.runtimeConnection) {
         await runtime.disconnect(payload.context.runtimeConnection);
       }
@@ -131,7 +161,6 @@ export async function serveBlockNoteCollaboration<TKey>(options: {
       }
       signalHandlers.clear();
       await server.destroy();
-      documents.clear();
       transportScopes.clear();
       await options.collaboration.stop();
       options.logger?.info("BlockNote collaboration server stopped.");
